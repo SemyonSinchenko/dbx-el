@@ -1,0 +1,168 @@
+#+title: dbx-el — a Databricks workbench for Emacs
+
+dbx-el brings Databricks into Emacs 30 (commands and options use the
+=dbx-= prefix): a SQL editor with results as Org
+tables, jobs and runs with text pages (status glyphs, duration bars, a
+task × run matrix), clusters and SQL warehouses, Declarative Automation
+Bundles with Graphviz graphs, Lakeflow Declarative Pipelines with dataset
+graphs, and a Python REPL running on Databricks Connect.  Every picker is
+plain =completing-read=, so it works with Vertico, Helm, Ivy, Icomplete,
+Consult, Marginalia and Embark.
+
+* Requirements
+
+| What                    | Needed for                         | Notes                                                    |
+|-------------------------+------------------------------------+----------------------------------------------------------|
+| Emacs ≥ 30.1            | everything                         | no other Emacs packages are required                     |
+| =databricks= CLI ≥ 1.25 | everything except the Python REPL  | the control plane; auth comes from =~/.databrickscfg=    |
+| uv                      | Python REPL, run-file              | the only Python-side requirement; it also provides Python |
+| Graphviz =dot=          | graphical graphs (optional)        | without it graphs are shown as text trees                |
+
+* Installation
+
+From Git with the built-in package-vc (the package name must be given,
+because the repository name differs from the package name):
+
+#+begin_src emacs-lisp
+(package-vc-install '(dbx-el :url "https://example.invalid/dbx-el.git"))
+#+end_src
+
+or with =use-package= (Emacs 30):
+
+#+begin_src emacs-lisp
+(use-package dbx-el
+  :vc (:url "https://example.invalid/dbx-el.git" :rev :newest)
+  :bind-keymap ("C-c d" . dbx-command-map)
+  :config (dbx-mode-line-mode 1))
+#+end_src
+
+The =python/= directory must stay next to =dbx-el.el=; package-vc keeps the
+whole checkout, so nothing else is needed.
+
+* Configuration
+
+Contexts say what you work against.  Without any, dbx uses the profiles
+in =~/.databrickscfg= directly.
+
+#+begin_src emacs-lisp
+(setq dbx-contexts
+      '((:name "dev"  :profile "dev"  :cluster "0612-123456-abcd" :warehouse "1a2b3c4d5e6f7a8b")
+        (:name "prod" :profile "prod" :serverless t :warehouse "9f8e7d6c5b4a3f2e"
+         :catalog "main" :schema "analytics" :confirm t)))
+#+end_src
+
+A project can pick a context in =.dir-locals.el= (only the name; the
+definition stays in your init):
+
+#+begin_src emacs-lisp
+((nil . ((dbx-project-context . "dev"))))
+#+end_src
+
+** Python environment
+
+By default dbx creates and owns one uv environment per Databricks Connect
+version under =~/.emacs.d/dbx/venvs/=, matching the cluster's DBR (or
+=dbx-serverless-connect-version= for serverless).  It asks before
+creating it.  To use your own environment instead (dbx never installs
+anything into it):
+
+#+begin_src emacs-lisp
+(setq dbx-connect-venv "~/work/project/.venv")
+#+end_src
+
+It must contain =databricks-connect= and must not contain =pyspark= or
+=pyspark-client=.  =M-x dbx-doctor= checks this.
+
+* Usage
+
+=C-c d d= opens the menu.  Global keys under =C-c d=:
+
+| Key   | Command                   | Key   | Command                  |
+|-------+---------------------------+-------+--------------------------|
+| =d=   | menu                      | =x=   | select context           |
+| =j=   | find job                  | =J=   | jobs list                |
+| =r=   | find run                  | =R=   | active runs              |
+| =c=   | find cluster              | =C=   | clusters list            |
+| =w=   | find warehouse            | =W=   | warehouses list          |
+| =s=   | new SQL editor            | =h=   | query history            |
+| =p=   | find pipeline             | =P=   | pipelines list           |
+| =b=   | bundle menu               | =g=   | graph for current buffer |
+| =z=   | Python REPL               | =!=   | watched runs             |
+| =D=   | doctor                    |       |                          |
+
+** Pages and lists
+
+All pages and lists share: =RET= open, =g= refresh, =TAB= fold, =n=/=p=
+items, =M-n=/=M-p= sections, =]=/=[= newer/older, =w=/=W= copy id/URL,
+=o= browser, =G= graph, =f= watch, =?= actions, =q= quit.
+
+| Buffer    | Keys                                                                         |
+|-----------+------------------------------------------------------------------------------|
+| Job       | =r= run now, =R= run with parameters, =l= runs, =C= cancel all active runs   |
+| Run       | =c= cancel, =R= repair, =x= rerun, =L= task output, =j= job page             |
+| Cluster   | =s= start, =S= terminate, =x= restart, =U= use as compute                    |
+| Warehouse | =s= start, =S= stop, =U= use for SQL                                         |
+| Pipeline  | =s= start, =F= full refresh, =T= refresh tables, =v= validate, =S= stop, =H= history |
+| Bundle    | =RET= open resource, =y= YAML definition, =r= run, =v= validate, =l= plan, =d= deploy |
+| Graph     | =RET= open node (or click), =t= text/graphics, =m= copy Mermaid, =d= copy DOT |
+
+Destructive actions (cancel, terminate, deploy, destroy, full refresh)
+always ask first.  Runs started from Emacs are watched and produce a
+desktop notification when they finish.
+
+** SQL
+
+In any =sql-mode= buffer enable =dbx-sql-mode= (or use =C-c d s=):
+
+| Key       | Action                      | Key       | Action             |
+|-----------+-----------------------------+-----------+--------------------|
+| =C-c C-c= | run statement at point      | =C-c C-r= | run region         |
+| =C-c C-b= | run buffer                  | =C-c C-k= | cancel             |
+| =C-c C-t= | choose warehouse            | =C-c C-s= | catalog and schema |
+| =C-c C-l= | row limit (default 2000)    | =C-c C-h= | query history      |
+
+=:name= parameters are prompted for.  Results go to an Org buffer, one
+section per run, as pre-aligned Org tables.  There: =n=/=p= results,
+=r= re-run, =e= export (CSV/TSV), =c=/=C= copy cell/row, =y= copy table
+as TSV, =s= sort by column, =E= make editable.
+
+** Python
+
+=C-c d z= starts the REPL (creating the uv environment if needed).  In
+Python buffers enable =dbx-python-mode=: =C-c C-c= buffer, =C-c C-r=
+region, =C-M-x= defun, =C-c C-k= interrupt, =C-c C-f= run file,
+=C-c C-z= REPL.  =spark=, =sql=, =udf=, =dbutils= and =getArgument= are
+predefined.  Interrupt cancels both the local Python code and the Spark
+operations it started (by tag).
+
+** Bundles
+
+=dbx-bundle-mode= turns on in YAML files of projects with
+=databricks.yml=: Flymake diagnostics from =bundle validate=, and
+=C-c C-b= for the bundle menu (summary, graph, validate, plan, deploy,
+run, destroy, target).
+
+* Development
+
+#+begin_src sh
+eask install-deps
+eask run script test      # byte-compile + ERT (+ Python tests through uv)
+eask lint package
+uv run --no-project --with pytest pytest -q test/python
+#+end_src
+
+Tests run offline: =test/bin/databricks= is a fake CLI replaying
+recorded, anonymized responses from =test/fixtures/=.
+
+* Status
+
+0.1.0.  Verified offline against recorded API shapes and in GUI and
+terminal Emacs 30.2.  Not yet exercised against a live workspace: the
+=bundle summary=/=validate -o json= shapes, the query-history filter
+parameter, pipeline event details beyond the documented fields, and
+Databricks Connect progress callbacks.  Design notes:
+=docs/design/spark-connect-emacs.md=.
+
+* License
+
+WTFPL, see =LICENSE=.

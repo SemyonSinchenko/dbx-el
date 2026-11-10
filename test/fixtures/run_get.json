@@ -1,0 +1,180 @@
+{
+ "run_id": 1001,
+ "job_id": 42,
+ "run_name": "etl-job",
+ "start_time": 1794300000000,
+ "end_time": 1794303000000,
+ "run_duration": 3000000,
+ "trigger": "PERIODIC",
+ "run_type": "JOB_RUN",
+ "job_parameters": [
+  {
+   "name": "country_filter",
+   "value": "US",
+   "default": "ALL"
+  }
+ ],
+ "tasks": [
+  {
+   "task_key": "preflight",
+   "run_id": 11,
+   "start_time": 1794300000100,
+   "end_time": 1794300114000,
+   "run_duration": null,
+   "state": {
+    "life_cycle_state": "TERMINATED",
+    "state_message": "Workload failed, see run output for details",
+    "user_cancelled_or_timedout": false,
+    "result_state": "FAILED"
+   },
+   "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+     "code": "RUN_EXECUTION_ERROR",
+     "type": "CLIENT_ERROR",
+     "message": "Workload failed, see run output for details"
+    }
+   }
+  },
+  {
+   "task_key": "preflight",
+   "run_id": 12,
+   "start_time": 1794300900000,
+   "end_time": 1794300990000,
+   "run_duration": null,
+   "state": {
+    "life_cycle_state": "TERMINATED",
+    "state_message": "",
+    "user_cancelled_or_timedout": false,
+    "result_state": "SUCCESS"
+   },
+   "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+     "code": "SUCCESS",
+     "type": "SUCCESS",
+     "message": ""
+    }
+   }
+  },
+  {
+   "task_key": "hour_le_5",
+   "run_id": 13,
+   "start_time": 1794300990100,
+   "end_time": 1794300991000,
+   "run_duration": null,
+   "state": {
+    "life_cycle_state": "TERMINATED",
+    "state_message": "",
+    "user_cancelled_or_timedout": false,
+    "result_state": "SUCCESS"
+   },
+   "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+     "code": "SUCCESS",
+     "type": "SUCCESS",
+     "message": ""
+    }
+   }
+  },
+  {
+   "task_key": "hour_ge_23",
+   "run_id": 14,
+   "start_time": 1794300990100,
+   "end_time": 1794300991000,
+   "run_duration": null,
+   "state": {
+    "life_cycle_state": "TERMINATED",
+    "state_message": "",
+    "user_cancelled_or_timedout": false,
+    "result_state": "SUCCESS"
+   },
+   "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+     "code": "SUCCESS",
+     "type": "SUCCESS",
+     "message": ""
+    }
+   }
+  },
+  {
+   "task_key": "job_offpeak",
+   "run_id": 15,
+   "start_time": 1794300991500,
+   "end_time": 1794302000000,
+   "run_duration": null,
+   "state": {
+    "life_cycle_state": "TERMINATED",
+    "state_message": "",
+    "user_cancelled_or_timedout": false,
+    "result_state": "SUCCESS"
+   },
+   "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+     "code": "SUCCESS",
+     "type": "SUCCESS",
+     "message": ""
+    }
+   }
+  },
+  {
+   "task_key": "optimize_offpeak",
+   "run_id": 16,
+   "start_time": 1794302000100,
+   "end_time": 1794303000000,
+   "run_duration": null,
+   "state": {
+    "life_cycle_state": "TERMINATED",
+    "state_message": "",
+    "user_cancelled_or_timedout": false,
+    "result_state": "SUCCESS"
+   },
+   "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+     "code": "SUCCESS",
+     "type": "SUCCESS",
+     "message": ""
+    }
+   }
+  },
+  {
+   "task_key": "job_peak_early",
+   "run_id": 17,
+   "start_time": 1794300991200,
+   "end_time": 1794300991200,
+   "run_duration": null,
+   "state": {
+    "life_cycle_state": "SKIPPED",
+    "state_message": "Excluded because its conditional dependency on hour_le_5 was not met.",
+    "user_cancelled_or_timedout": false,
+    "result_state": "EXCLUDED"
+   },
+   "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+     "code": "SKIPPED",
+     "type": "SUCCESS",
+     "message": "Excluded because its conditional dependency on hour_le_5 was not met."
+    }
+   }
+  }
+ ],
+ "state": {
+  "life_cycle_state": "TERMINATED",
+  "state_message": "",
+  "user_cancelled_or_timedout": false,
+  "result_state": "SUCCESS"
+ },
+ "status": {
+  "state": "TERMINATED",
+  "termination_details": {
+   "code": "SUCCESS",
+   "type": "SUCCESS",
+   "message": ""
+  }
+ }
+}

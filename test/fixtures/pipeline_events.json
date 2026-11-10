@@ -1,0 +1,174 @@
+{
+ "events": [
+  {
+   "id": "9",
+   "timestamp": "2026-11-10T10:09:00.000Z",
+   "level": "INFO",
+   "event_type": "flow_progress",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "daily_users",
+    "dataset_name": "daily_users"
+   },
+   "details": {
+    "flow_progress": {
+     "status": "RUNNING"
+    }
+   }
+  },
+  {
+   "id": "8",
+   "timestamp": "2026-11-10T10:08:00.000Z",
+   "level": "INFO",
+   "event_type": "flow_progress",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "events_clean",
+    "dataset_name": "events_clean"
+   },
+   "details": {
+    "flow_progress": {
+     "status": "COMPLETED",
+     "metrics": {
+      "num_output_rows": 1104233
+     },
+     "data_quality": {
+      "expectations": [
+       {
+        "name": "valid_ts",
+        "dataset": "events_clean",
+        "passed_records": 1100000,
+        "failed_records": 4233
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "7",
+   "timestamp": "2026-11-10T10:07:00.000Z",
+   "level": "INFO",
+   "event_type": "flow_progress",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "raw_events",
+    "dataset_name": "raw_events"
+   },
+   "details": {
+    "flow_progress": {
+     "status": "COMPLETED",
+     "metrics": {
+      "num_output_rows": 1204233
+     }
+    }
+   }
+  },
+  {
+   "id": "6",
+   "timestamp": "2026-11-10T10:06:00.000Z",
+   "level": "INFO",
+   "event_type": "dataset_definition",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "daily_users",
+    "dataset_name": "daily_users"
+   },
+   "details": {
+    "dataset_definition": {
+     "dataset_type": "MATERIALIZED_VIEW"
+    }
+   }
+  },
+  {
+   "id": "5",
+   "timestamp": "2026-11-10T10:05:00.000Z",
+   "level": "INFO",
+   "event_type": "dataset_definition",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "events_clean",
+    "dataset_name": "events_clean"
+   },
+   "details": {
+    "dataset_definition": {
+     "dataset_type": "STREAMING_TABLE"
+    }
+   }
+  },
+  {
+   "id": "4",
+   "timestamp": "2026-11-10T10:04:00.000Z",
+   "level": "INFO",
+   "event_type": "flow_definition",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "daily_users",
+    "dataset_name": "daily_users"
+   },
+   "details": {
+    "flow_definition": {
+     "output_dataset": "main.app.daily_users",
+     "input_datasets": [
+      "main.app.events_clean",
+      "main.app.users_dim"
+     ]
+    }
+   }
+  },
+  {
+   "id": "3",
+   "timestamp": "2026-11-10T10:03:00.000Z",
+   "level": "INFO",
+   "event_type": "flow_definition",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "events_clean",
+    "dataset_name": "events_clean"
+   },
+   "details": {
+    "flow_definition": {
+     "output_dataset": "main.app.events_clean",
+     "input_datasets": [
+      {
+       "name": "main.app.raw_events"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "2",
+   "timestamp": "2026-11-10T10:02:00.000Z",
+   "level": "INFO",
+   "event_type": "flow_definition",
+   "message": "",
+   "origin": {
+    "pipeline_id": "p-1",
+    "update_id": "u-2",
+    "flow_name": "raw_events",
+    "dataset_name": "raw_events"
+   },
+   "details": {
+    "flow_definition": {
+     "output_dataset": "main.app.raw_events",
+     "input_datasets": []
+    }
+   }
+  }
+ ]
+}

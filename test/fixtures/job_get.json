@@ -1,0 +1,109 @@
+{
+ "job_id": 42,
+ "creator_user_name": "ebc9c1e3-74bf-4acf-8bf2-0f1bb14773c9",
+ "run_as_user_name": "ebc9c1e3-74bf-4acf-8bf2-0f1bb14773c9",
+ "created_time": 1777551449315,
+ "settings": {
+  "name": "etl-job",
+  "description": "Data generation job",
+  "schedule": {
+   "quartz_cron_expression": "0 55 * * * ?",
+   "timezone_id": "GMT",
+   "pause_status": "UNPAUSED"
+  },
+  "tags": {
+   "Env": "dev",
+   "JobType": "etl"
+  },
+  "deployment": {
+   "kind": "BUNDLE",
+   "metadata_file_path": "/Workspace/Shared/.bundle/soe/etl_prod/master/state/metadata.json"
+  },
+  "edit_mode": "UI_LOCKED",
+  "performance_target": null,
+  "parameters": [
+   {
+    "name": "country_filter",
+    "default": "ALL"
+   },
+   {
+    "name": "partition_date",
+    "default": ""
+   }
+  ],
+  "tasks": [
+   {
+    "task_key": "hour_ge_23",
+    "depends_on": [
+     {
+      "task_key": "preflight"
+     }
+    ],
+    "condition_task": {
+     "op": "EQUAL_TO",
+     "left": "1",
+     "right": "1"
+    }
+   },
+   {
+    "task_key": "hour_le_5",
+    "depends_on": [
+     {
+      "task_key": "preflight"
+     }
+    ],
+    "condition_task": {
+     "op": "EQUAL_TO",
+     "left": "1",
+     "right": "1"
+    }
+   },
+   {
+    "task_key": "job_offpeak",
+    "depends_on": [
+     {
+      "task_key": "hour_le_5",
+      "outcome": "false"
+     },
+     {
+      "task_key": "hour_ge_23",
+      "outcome": "false"
+     }
+    ],
+    "spark_python_task": {
+     "python_file": "etl.py"
+    }
+   },
+   {
+    "task_key": "job_peak_early",
+    "depends_on": [
+     {
+      "task_key": "hour_le_5",
+      "outcome": "true"
+     }
+    ],
+    "spark_python_task": {
+     "python_file": "etl.py"
+    }
+   },
+   {
+    "task_key": "optimize_offpeak",
+    "depends_on": [
+     {
+      "task_key": "job_offpeak"
+     }
+    ],
+    "notebook_task": {
+     "notebook_path": "optimize"
+    }
+   },
+   {
+    "task_key": "preflight",
+    "depends_on": null,
+    "spark_python_task": {
+     "python_file": "preflight.py"
+    }
+   }
+  ]
+ }
+}

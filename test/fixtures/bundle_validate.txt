@@ -1,0 +1,12 @@
+Warning: unknown field: retries
+  at resources.jobs.etl.tasks[0]
+  in databricks.yml:12:7
+
+Error: cannot resolve variable ${var.missing}
+  in resources/etl.yml:3:5
+  in resources/other.yml:8:1
+
+Name: soe
+Target: dev
+
+Found 1 error and 1 warning

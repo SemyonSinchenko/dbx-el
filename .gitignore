@@ -1,0 +1,17 @@
+*.elc
+*-autoloads.el
+/.eask/
+/dist/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.agent-shell/
+.mas/
+.codex-container/
+.dsh/
+.claude-container/
+
+*~
+\#*
+*#

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Fake databricks CLI for tests: replays fixtures by matching arguments.
+dir="$(cd "$(dirname "$0")/../fixtures" && pwd)"
+args="$*"
+[ -n "$DBX_FAKE_LOG" ] && echo "$args" >> "$DBX_FAKE_LOG"
+json_arg() { for a in "$@"; do case "$a" in @*) cat "${a#@}";; esac; done; }
+case "$args" in
+  version*) echo "Databricks CLI v1.25.0";;
+  *"api get /api/2.2/jobs/runs/list"*) cat "$dir/runs_list.json";;
+  *"api get /api/2.2/jobs/runs/get?"*) cat "$dir/run_get.json";;
+  *"api get /api/2.2/jobs/get?"*) cat "$dir/job_get.json";;
+  *"api get /api/2.0/preview/scim/v2/ServicePrincipals"*) echo '{"Resources":[{"displayName":"etl-service-principal"}]}';;
+  *"api post /api/2.0/sql/statements/"*"/cancel"*) echo '{}';;
+  *"api post /api/2.0/sql/statements"*)
+     [ -n "$DBX_FAKE_LOG" ] && json_arg "$@" >> "$DBX_FAKE_LOG" && echo >> "$DBX_FAKE_LOG"
+     cat "$dir/statement_pending.json";;
+  *"api get /api/2.0/sql/statements/"*) cat "$dir/statement_done.json";;
+  *"api post /api/2.2/jobs/run-now"*)
+     [ -n "$DBX_FAKE_LOG" ] && json_arg "$@" >> "$DBX_FAKE_LOG" && echo >> "$DBX_FAKE_LOG"
+     echo '{"run_id": 5005}';;
+  *"api get /api/2.0/fail"*) echo "Error: boom from fake" >&2; exit 1;;
+  *) echo "Error: fake CLI has no fixture for: $args" >&2; exit 1;;
+esac
