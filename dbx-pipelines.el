@@ -212,11 +212,11 @@ Keys: :flows (FLOW -> (:output :inputs :explain)), :datasets
   (tabulated-list-init-header))
 
 ;;;###autoload
-(defun dbx-pipelines ()
-  "List pipelines."
+(defun dbx-pipelines (&optional context)
+  "List pipelines in CONTEXT (default: the active context)."
   (interactive)
-  (let ((buf (get-buffer-create "*dbx pipelines*")))
-    (with-current-buffer buf (dbx-pipelines-list-mode) (dbx-pipelines--refresh))
+  (let ((buf (dbx-page-buffer "pipelines" nil #'dbx-pipelines-list-mode context)))
+    (dbx--in-buffer buf (dbx-pipelines--refresh))
     (pop-to-buffer buf)))
 
 (defun dbx-pipelines--refresh ()
@@ -224,7 +224,7 @@ Keys: :flows (FLOW -> (:output :inputs :explain)), :datasets
     (dbx-pipelines-fetch
      (lambda (ps)
        (when (buffer-live-p buf)
-         (with-current-buffer buf
+         (dbx--in-buffer buf
            (dbx-list-set-entries
             (mapcar (lambda (p)
                       (let ((u (dbx-get p 'latest_updates 0 'state)))
@@ -266,16 +266,21 @@ Keys: :flows (FLOW -> (:output :inputs :explain)), :datasets
                 ("o" "Open in browser" dbx-page-browse))))
 
 ;;;###autoload
-(defun dbx-pipeline-page (id)
-  "Open the page of pipeline ID."
-  (interactive (list (read-string "Pipeline ID: ")))
-  (let ((buf (dbx-page-buffer (format "*dbx pipeline %s*" id) #'dbx-pipeline-page-mode)))
-    (with-current-buffer buf
+(defun dbx-pipeline-page (id &optional context no-select)
+  "Open the page of pipeline ID in CONTEXT and return its buffer.
+CONTEXT (a name or plist) defaults to the active context.  With
+NO-SELECT, prepare the page without displaying it.  Interactively,
+read a pipeline ID or URL."
+  (interactive
+   (let ((ref (dbx-read-object-ref "Pipeline ID or URL" '(pipeline) 'pipeline)))
+     (list (plist-get ref :id) (plist-get ref :context))))
+  (let ((buf (dbx-page-buffer "pipeline" id #'dbx-pipeline-page-mode context)))
+    (dbx--in-buffer buf
       (setq dbx-pipeline--id id)
       (setq-local dbx-page-refresh-function #'dbx-pipeline--refresh)
       (dbx-page-loading buf "pipeline")
       (dbx-pipeline--refresh))
-    (pop-to-buffer buf)))
+    (dbx-page-display buf no-select)))
 
 (defun dbx-pipeline--refresh ()
   (let ((buf (current-buffer)) (id dbx-pipeline--id))
@@ -287,9 +292,9 @@ Keys: :flows (FLOW -> (:output :inputs :explain)), :datasets
                 id
                 (lambda (events _latest)
                   (when (buffer-live-p buf)
-                    (with-current-buffer buf
+                    (dbx--in-buffer buf
                       (setq dbx-pipeline--data p dbx-pipeline--events events)
-                      (rename-buffer (format "*dbx pipeline: %s*" (alist-get 'name p)) t)
+                      (dbx-page-rename (alist-get 'name p))
                       (setq dbx-page-active-p
                             (eq (dbx-pipeline-status (dbx-get p 'latest_updates 0 'state)) 'running))
                       (dbx-pipeline--render)

@@ -101,16 +101,18 @@
                 ("o" "Open in browser" dbx-page-browse))))
 
 ;;;###autoload
-(defun dbx-cluster-page (cluster-id)
-  "Open the page of CLUSTER-ID."
+(defun dbx-cluster-page (cluster-id &optional context no-select)
+  "Open the page of CLUSTER-ID in CONTEXT and return its buffer.
+CONTEXT (a name or plist) defaults to the active context.  With
+NO-SELECT, prepare the page without displaying it."
   (interactive (list (alist-get 'cluster_id (dbx--read-cluster "Cluster: "))))
-  (let ((buf (dbx-page-buffer (format "*dbx cluster %s*" cluster-id) #'dbx-cluster-page-mode)))
-    (with-current-buffer buf
+  (let ((buf (dbx-page-buffer "cluster" cluster-id #'dbx-cluster-page-mode context)))
+    (dbx--in-buffer buf
       (setq dbx-cluster--id cluster-id)
       (setq-local dbx-page-refresh-function #'dbx-cluster--refresh)
       (dbx-page-loading buf "cluster")
       (dbx-cluster--refresh))
-    (pop-to-buffer buf)))
+    (dbx-page-display buf no-select)))
 
 (defun dbx-cluster--refresh ()
   (let ((buf (current-buffer)) (id dbx-cluster--id))
@@ -125,9 +127,9 @@
 
 (defun dbx-cluster--show (buf c events)
   (when (buffer-live-p buf)
-    (with-current-buffer buf
+    (dbx--in-buffer buf
       (setq dbx-cluster--data c)
-      (rename-buffer (format "*dbx cluster: %s*" (alist-get 'cluster_name c)) t)
+      (dbx-page-rename (alist-get 'cluster_name c))
       (setq dbx-page-active-p (eq (dbx-cluster-status (alist-get 'state c)) 'running))
       (let* ((st (alist-get 'state c)) (w (dbx--cluster-workers c))
              (url (dbx-url (format "/compute/clusters/%s" (alist-get 'cluster_id c)))))
@@ -225,11 +227,11 @@
   (tabulated-list-init-header))
 
 ;;;###autoload
-(defun dbx-clusters ()
-  "List clusters."
+(defun dbx-clusters (&optional context)
+  "List clusters in CONTEXT (default: the active context)."
   (interactive)
-  (let ((buf (get-buffer-create "*dbx clusters*")))
-    (with-current-buffer buf (dbx-clusters-list-mode) (dbx-clusters--refresh))
+  (let ((buf (dbx-page-buffer "clusters" nil #'dbx-clusters-list-mode context)))
+    (dbx--in-buffer buf (dbx-clusters--refresh))
     (pop-to-buffer buf)))
 
 (defun dbx-clusters--refresh ()
@@ -237,7 +239,7 @@
     (dbx-clusters-fetch
      (lambda (cs)
        (when (buffer-live-p buf)
-         (with-current-buffer buf
+         (dbx--in-buffer buf
            (dbx-list-set-entries
             (mapcar (lambda (c)
                       (let ((w (dbx--cluster-workers c)) (st (alist-get 'state c)))
@@ -317,16 +319,18 @@
                 ("U" "Use as SQL target" dbx-warehouse-use) ("o" "Open in browser" dbx-page-browse))))
 
 ;;;###autoload
-(defun dbx-warehouse-page (id)
-  "Open the page of SQL warehouse ID."
+(defun dbx-warehouse-page (id &optional context no-select)
+  "Open the page of SQL warehouse ID in CONTEXT and return its buffer.
+CONTEXT (a name or plist) defaults to the active context.  With
+NO-SELECT, prepare the page without displaying it."
   (interactive (list (alist-get 'id (dbx--read-warehouse "Warehouse: "))))
-  (let ((buf (dbx-page-buffer (format "*dbx warehouse %s*" id) #'dbx-warehouse-page-mode)))
-    (with-current-buffer buf
+  (let ((buf (dbx-page-buffer "warehouse" id #'dbx-warehouse-page-mode context)))
+    (dbx--in-buffer buf
       (setq dbx-warehouse--id id)
       (setq-local dbx-page-refresh-function #'dbx-warehouse--refresh)
       (dbx-page-loading buf "warehouse")
       (dbx-warehouse--refresh))
-    (pop-to-buffer buf)))
+    (dbx-page-display buf no-select)))
 
 (defun dbx-warehouse--refresh ()
   (let ((buf (current-buffer)) (id dbx-warehouse--id))
@@ -350,8 +354,8 @@
 
 (defun dbx-warehouse--show (buf w queries)
   (when (buffer-live-p buf)
-    (with-current-buffer buf
-      (rename-buffer (format "*dbx warehouse: %s*" (alist-get 'name w)) t)
+    (dbx--in-buffer buf
+      (dbx-page-rename (alist-get 'name w))
       (setq dbx-page-active-p (memq (dbx-warehouse-status (alist-get 'state w)) '(running)))
       (let ((url (dbx-url (format "/sql/warehouses/%s" (alist-get 'id w))))
             (mx (apply #'max 1 (delq nil (mapcar (lambda (q) (alist-get 'duration q)) queries)))))
@@ -431,11 +435,11 @@
   (tabulated-list-init-header))
 
 ;;;###autoload
-(defun dbx-warehouses ()
-  "List SQL warehouses."
+(defun dbx-warehouses (&optional context)
+  "List SQL warehouses in CONTEXT (default: the active context)."
   (interactive)
-  (let ((buf (get-buffer-create "*dbx warehouses*")))
-    (with-current-buffer buf (dbx-warehouses-list-mode) (dbx-warehouses--refresh))
+  (let ((buf (dbx-page-buffer "warehouses" nil #'dbx-warehouses-list-mode context)))
+    (dbx--in-buffer buf (dbx-warehouses--refresh))
     (pop-to-buffer buf)))
 
 (defun dbx-warehouses--refresh ()
@@ -443,7 +447,7 @@
     (dbx-warehouses-fetch
      (lambda (ws)
        (when (buffer-live-p buf)
-         (with-current-buffer buf
+         (dbx--in-buffer buf
            (dbx-list-set-entries
             (mapcar (lambda (w)
                       (list (alist-get 'id w)

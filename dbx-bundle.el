@@ -104,25 +104,27 @@
       (goto-char (point-min))
       (when (re-search-forward "/jobs/[0-9]+/runs/\\([0-9]+\\)" nil t)
         (setq dbx-bundle--seen-run (match-string 1))
-        (let ((rid dbx-bundle--seen-run))
+        (let ((rid dbx-bundle--seen-run) (ctx (dbx-context)))
           (run-at-time 0 nil (lambda ()
                                (require 'dbx-jobs)
-                               (save-selected-window (dbx-run-page rid)))))))))
+                               (save-selected-window (dbx-run-page rid ctx)))))))))
 
 (defun dbx-bundle-run-cli (args &optional name)
   "Run `databricks bundle ARGS' in a compilation buffer named after NAME."
   (let* ((root (dbx-bundle--root))
          (default-directory root)
-         (process-environment (dbx-context-env))
+         (ctx (dbx-context))
+         (process-environment (dbx-context-env ctx))
          (cmd (mapconcat #'shell-quote-argument
                          (append (list dbx-cli-program "bundle") args
                                  (dbx-bundle--target-args root)
-                                 (list "--profile" (dbx-context-profile)))
+                                 (list "--profile" (dbx-context-profile ctx)))
                          " ")))
     (with-current-buffer
         (compilation-start cmd #'dbx-bundle-output-mode
                            (lambda (_) (format "*dbx bundle %s*" (or name (car args)))))
-      (setq dbx-bundle--seen-run nil)
+      (setq dbx-bundle--seen-run nil
+            dbx-buffer-context (dbx--context-ref ctx))
       (add-hook 'compilation-filter-hook #'dbx-bundle--detect-run nil t)
       (current-buffer))))
 

@@ -57,6 +57,7 @@
     ("D" "doctor" dbx-doctor)
     ("!" "watched runs" dbx-watched-runs)]
    ["Jobs & runs"
+    ("o" "open ID/URL" dbx-open)
     ("j" "find job" dbx-find-job)
     ("J" "jobs list" dbx-jobs)
     ("r" "find run" dbx-find-run)
@@ -97,6 +98,27 @@
     ("t" "target" dbx-bundle-select-target)
     ("o" "open in browser" dbx-bundle-open)]])
 
+;;;###autoload
+(defun dbx-open (ref)
+  "Open the page of REF, an object id or workspace URL, and return it.
+Understands job, run, cluster, warehouse and pipeline URLs (also the
+legacy #fragment forms) and bare ids; see `dbx-parse-object-ref'.  A
+URL of a known workspace opens in that workspace's context, anything
+else in the active context.  Interactively, the latest kill is the
+default when it parses.  REF may also be a parsed plist."
+  (interactive (list (dbx-read-object-ref "Open ID or URL")))
+  (let* ((ref (if (stringp ref)
+                  (or (dbx-parse-object-ref ref) (user-error "dbx: not an id or URL: %s" ref))
+                ref))
+         (id (plist-get ref :id))
+         (ctx (plist-get ref :context)))
+    (pcase (plist-get ref :kind)
+      ('job (dbx-job-page id ctx))
+      ('run (dbx-run-page id ctx))
+      ('cluster (dbx-cluster-page id ctx))
+      ('warehouse (dbx-warehouse-page id ctx))
+      ('pipeline (dbx-pipeline-page id ctx)))))
+
 (defun dbx-graph-dwim ()
   "Show the graph for the current buffer: job, run, pipeline or bundle."
   (interactive)
@@ -111,6 +133,7 @@
   :doc "Global dbx commands.  Suggested: (keymap-global-set \"C-c d\" dbx-command-map)."
   "d" #'dbx-dispatch
   "x" #'dbx-select-context
+  "o" #'dbx-open
   "j" #'dbx-find-job
   "J" #'dbx-jobs
   "r" #'dbx-find-run

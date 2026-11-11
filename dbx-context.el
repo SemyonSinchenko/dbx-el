@@ -47,6 +47,16 @@ They would otherwise override the selected profile."
   "Name of the context for this project, usually set in .dir-locals.el.")
 (put 'dbx-project-context 'safe-local-variable #'dbx--known-context-name-p)
 
+(defvar-local dbx-buffer-context nil
+  "Context owned by this buffer: a context name or plist.
+Pages and lists set it when they are created, so they keep the
+context of the buffer they were opened from for their whole life.")
+(put 'dbx-buffer-context 'permanent-local t)
+
+(defvar dbx--dynamic-context nil
+  "Context (name or plist) bound by `dbx-with-context'.
+CLI callbacks run with it bound to the context of their call.")
+
 (defvar dbx-current-context-name nil
   "Name of the globally selected context.")
 
@@ -58,8 +68,9 @@ They would otherwise override the selected profile."
   (and (stringp name)
        (cl-some (lambda (c) (equal (plist-get c :name) name)) dbx-contexts)))
 
-(defun dbx--context-by-name (name)
-  "Return the context plist named NAME, with runtime overrides."
+(defun dbx-context-by-name (name)
+  "Return the context plist named NAME, with runtime overrides.
+A NAME not in `dbx-contexts' is taken as a config profile."
   (let ((base (or (cl-find name dbx-contexts
                            :key (lambda (c) (plist-get c :name)) :test #'equal)
                   (and name (list :name name :profile name))))
@@ -69,12 +80,54 @@ They would otherwise override the selected profile."
         (cl-loop for (k v) on over by #'cddr do (setq ctx (plist-put ctx k v)))
         ctx))))
 
+(define-obsolete-function-alias 'dbx--context-by-name #'dbx-context-by-name "0.1.1")
+
+(defun dbx--resolve-context (c)
+  "Context plist for C, a name or a plist (returned as is)."
+  (if (consp c) c (dbx-context-by-name c)))
+
 (defun dbx-context ()
-  "Return the active context plist."
-  (let ((name (or dbx-project-context dbx-current-context-name
-                  (plist-get (car dbx-contexts) :name))))
-    (or (and name (dbx--context-by-name name))
-        (list :name "DEFAULT" :profile "DEFAULT"))))
+  "Return the active context plist.
+In order: `dbx-with-context' (and CLI callbacks), the buffer's own
+context `dbx-buffer-context', `dbx-project-context', the global
+`dbx-current-context-name', the first entry of `dbx-contexts'."
+  (or (and dbx--dynamic-context (dbx--resolve-context dbx--dynamic-context))
+      (and dbx-buffer-context (dbx--resolve-context dbx-buffer-context))
+      (let ((name (or dbx-project-context dbx-current-context-name
+                      (plist-get (car dbx-contexts) :name))))
+        (and name (dbx-context-by-name name)))
+      (list :name "DEFAULT" :profile "DEFAULT")))
+
+(defun dbx-context-name (&optional ctx)
+  "Name of CTX (a name or plist; default: the active context)."
+  (if (stringp ctx) ctx (plist-get (or ctx (dbx-context)) :name)))
+
+(defun dbx--context-ref (ctx)
+  "What to store to refer to CTX later: its name when it is a known
+context (so runtime overrides stay live), else the plist itself."
+  (let ((ctx (dbx--resolve-context ctx)))
+    (if (dbx--known-context-name-p (plist-get ctx :name)) (plist-get ctx :name) ctx)))
+
+(defmacro dbx-with-context (context &rest body)
+  "Run BODY with CONTEXT (a name or plist) as the active context.
+Calls started in BODY, their callbacks and pages opened from them
+use CONTEXT, whatever buffer is current."
+  (declare (indent 1) (debug t))
+  `(let ((dbx--dynamic-context (or ,context dbx--dynamic-context)))
+     ,@body))
+
+(defun dbx--buffer-own-context ()
+  "The current buffer's context, ignoring `dbx-with-context'."
+  (let ((dbx--dynamic-context nil)) (dbx-context)))
+
+(defmacro dbx--in-buffer (buffer &rest body)
+  "Run BODY in BUFFER and in BUFFER's own context.
+Use it when async code (callbacks, timers) enters a dbx buffer, so
+an unrelated context bound around the callback does not leak in."
+  (declare (indent 1) (debug t))
+  `(with-current-buffer ,buffer
+     (let ((dbx--dynamic-context (dbx--buffer-own-context)))
+       ,@body)))
 
 (defun dbx-context-get (key &optional ctx)
   "Return KEY of CTX (default: active context)."
@@ -132,6 +185,79 @@ Values that look like secrets are dropped."
   "Absolute workspace URL for PATH in CTX."
   (concat (or (dbx-context-host ctx) "") path))
 
+;;;; Object references: ids and workspace URLs
+
+(defun dbx--host-key (host)
+  (and host (downcase (replace-regexp-in-string "\\`https?://\\|/+\\'" "" host))))
+
+(defun dbx-context-for-host (host)
+  "Name of a context whose workspace host is HOST, or nil.
+The active context wins if it matches; then `dbx-contexts', then
+profiles of the config file."
+  (let ((key (dbx--host-key host)))
+    (cl-find-if (lambda (name)
+                  (equal (dbx--host-key (dbx-context-host (dbx-context-by-name name))) key))
+                (delete-dups
+                 (append (list (dbx-context-name))
+                         (mapcar (lambda (c) (plist-get c :name)) dbx-contexts)
+                         (mapcar #'car (dbx-config-profiles)))))))
+
+(defun dbx--parse-object-path (path)
+  "Parse the PATH (or legacy #fragment) of a workspace URL."
+  (let ((m (lambda (n) (match-string n path))))
+    (cond
+     ((string-match "/jobs?/\\([0-9]+\\)/runs?/\\([0-9]+\\)" path)
+      (list :kind 'run :id (funcall m 2) :job-id (funcall m 1)))
+     ((string-match "/jobs?/\\([0-9]+\\)\\(?:/\\|\\'\\)" path)
+      (list :kind 'job :id (funcall m 1)))
+     ((string-match "/clusters/\\([0-9a-z][0-9a-z-]*\\)" path)
+      (list :kind 'cluster :id (funcall m 1)))
+     ((string-match "/sql/warehouses/\\([0-9a-z]+\\)" path)
+      (list :kind 'warehouse :id (funcall m 1)))
+     ((string-match "/pipelines/\\([0-9a-f-]+\\)" path)
+      (list :kind 'pipeline :id (funcall m 1))))))
+
+(defun dbx-parse-object-ref (string &optional bare-kind)
+  "Parse STRING, an object id or a workspace URL, into a plist or nil.
+Keys: :kind (`job', `run', `cluster', `warehouse' or `pipeline'),
+:id, :job-id (runs from URLs), :host and :context (URLs: the name of
+the context whose host matches, if any).  Query strings and
+fragments such as ?o=WORKSPACE-ID are ignored.  A bare number is a
+BARE-KIND id (default `job'); cluster, warehouse and pipeline ids are
+recognised by their shape."
+  (let ((s (string-trim (or string ""))))
+    (cond
+     ((string-match "\\`\\(https?://[^/?#]+\\)\\([^?#]*\\)[^#]*\\(?:#\\(.*\\)\\)?\\'" s)
+      (let* ((host (match-string 1 s))
+             (path (match-string 2 s))
+             (frag (match-string 3 s))
+             (ref (or (dbx--parse-object-path path)
+                      (and frag (dbx--parse-object-path (concat "/" frag))))))
+        (and ref (append ref (list :host host :context (dbx-context-for-host host))))))
+     ((string-match-p "\\`[0-9]+\\'" s) (list :kind (or bare-kind 'job) :id s))
+     ((string-match-p "\\`[0-9]\\{4\\}-[0-9]\\{6\\}-[0-9a-z]+\\'" s) (list :kind 'cluster :id s))
+     ((string-match-p "\\`[0-9a-f]\\{8\\}\\(?:-[0-9a-f]\\{4\\}\\)\\{3\\}-[0-9a-f]\\{12\\}\\'" s)
+      (list :kind 'pipeline :id s))
+     ((string-match-p "\\`[0-9a-f]\\{16\\}\\'" s) (list :kind 'warehouse :id s)))))
+
+(defun dbx-read-object-ref (prompt &optional kinds bare-kind)
+  "Read an id or workspace URL with PROMPT and return it parsed.
+See `dbx-parse-object-ref' for the result and BARE-KIND.  KINDS
+restricts the accepted kinds.  The latest kill (clipboard) is the
+default when it parses."
+  (let* ((ok (lambda (r) (and r (or (null kinds) (memq (plist-get r :kind) kinds)))))
+         (kill (ignore-errors (current-kill 0 t)))
+         (def (and (stringp kill) (< (length kill) 2000)
+                   (funcall ok (dbx-parse-object-ref kill bare-kind))
+                   (string-trim kill)))
+         (str (read-string (format-prompt prompt (and def (truncate-string-to-width def 50 nil nil t)))
+                           nil nil def))
+         (ref (dbx-parse-object-ref str bare-kind)))
+    (unless (funcall ok ref)
+      (user-error "dbx: not a %s id or URL: %s"
+                  (if kinds (mapconcat #'symbol-name kinds "/") "Databricks") str))
+    ref))
+
 ;;;; Environment
 
 (defun dbx-context-env (&optional ctx with-compute)
@@ -165,7 +291,7 @@ With WITH-COMPUTE, also set the Databricks Connect compute selector."
 ;;;; Selection
 
 (defun dbx--context-annotation (name)
-  (let ((c (dbx--context-by-name name)))
+  (let ((c (dbx-context-by-name name)))
     (concat "  " (propertize (format "profile %s" (dbx-context-profile c)) 'face 'dbx-dim)
             (cond ((plist-get c :serverless) "  serverless")
                   ((plist-get c :cluster) (format "  cluster %s" (plist-get c :cluster)))

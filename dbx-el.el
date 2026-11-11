@@ -2,9 +2,9 @@
 
 ;; Author: Semyon Sinchenko <ssinchenko@apache.org>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1"))
+;; Package-Requires: ((emacs "30.1") (transient "0.7"))
 ;; Keywords: tools, data, sql
-;; URL: https://example.invalid/dbx-el
+;; URL: https://github.com/SemyonSinchenko/dbx-el
 
 ;; This file is not part of GNU Emacs.
 ;; SPDX-License-Identifier: WTFPL

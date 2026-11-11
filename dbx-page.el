@@ -14,6 +14,13 @@
 ;;   `dbx-id'   an id copied by w
 ;;   `dbx-url'  a URL copied by W and opened by o
 ;;   `dbx-item' marks the start of an item for n/p
+;;
+;; Every page and list owns a context (`dbx-buffer-context'), taken
+;; from the buffer it was opened from.  Refreshes, actions and pages
+;; opened from it use that context.  A buffer is identified by
+;; (KIND ID CONTEXT-NAME), so the same id in two workspaces gets two
+;; buffers.  See "Extending" in README.org for the buffer-local
+;; protocol third-party pages and lists can use.
 
 ;;; Code:
 
@@ -23,17 +30,26 @@
 (require 'dbx-cli)
 
 (defcustom dbx-page-refresh-active 3
-  "Seconds between refreshes while something on the page is running."
+  "Seconds between refreshes while something on the page is running.
+May be set buffer-locally, e.g. in a list showing many objects."
   :type 'number :group 'dbx)
 
 (defcustom dbx-page-refresh-idle 60
-  "Seconds between refreshes when nothing on the page is running."
+  "Seconds between refreshes when nothing on the page is running.
+May be set buffer-locally."
   :type 'number :group 'dbx)
 
 (defvar-local dbx-page-refresh-function nil
   "Function with no arguments that fetches data and re-renders the page.")
 (defvar-local dbx-page-actions nil
   "List of (KEY DESCRIPTION COMMAND) shown by `dbx-page-actions'.")
+(defvar dbx-page-extra-actions nil
+  "Extra page actions: alist of (MODE . ((KEY DESCRIPTION COMMAND) ...)).
+They are offered by `dbx-page-actions' in buffers derived from MODE,
+after the buffer's own `dbx-page-actions'.")
+(defvar-local dbx-page--key nil
+  "(KIND ID CONTEXT-NAME) identifying a page or list buffer.")
+(put 'dbx-page--key 'permanent-local t)
 (defvar-local dbx-page-active-p nil
   "Non-nil when the page shows running work (faster refresh).")
 (defvar-local dbx-page-newer-function nil)
@@ -162,19 +178,44 @@ FOLDED non-nil folds the section on first render."
     (funcall dbx-page-refresh-function)))
 
 (defvar-local dbx-list-open-function nil
-  "In lists: function called with the row id by RET.")
+  "In lists: function called with the row id by RET.
+For a row id (ID . CONTEXT) it receives ID with CONTEXT active.")
 (defvar-local dbx-list-url-function nil
-  "In lists: function returning the URL for a row id.")
+  "In lists: function returning the URL for a row id.
+For a row id (ID . CONTEXT) it receives ID with CONTEXT active.")
+
+(defun dbx--row-context-p (id)
+  "Non-nil if row ID has the form (ID . CONTEXT)."
+  (and (consp id)
+       (or (stringp (cdr id))
+           (and (consp (cdr id)) (keywordp (cadr id))))))
+
+(defun dbx-list-row-id (&optional id)
+  "Object id of row ID (default: the row at point), without its context."
+  (let ((id (or id (and (derived-mode-p 'tabulated-list-mode) (tabulated-list-get-id)))))
+    (if (consp id) (car id) id)))
+
+(defun dbx-list-row-context (&optional id)
+  "Context of row ID (default: the row at point): its own or the buffer's."
+  (let ((id (or id (and (derived-mode-p 'tabulated-list-mode) (tabulated-list-get-id)))))
+    (if (dbx--row-context-p id) (dbx--resolve-context (cdr id)) (dbx-context))))
+
+(defun dbx--row-call (fn id)
+  "Call FN with the object id of row ID, in the row's context."
+  (if (dbx--row-context-p id)
+      (dbx-with-context (cdr id) (funcall fn (car id)))
+    (funcall fn id)))
 
 (defun dbx-page--prop (prop)
   (or (and (derived-mode-p 'tabulated-list-mode) (tabulated-list-get-id)
            (let ((id (tabulated-list-get-id)))
              (pcase prop
                ('dbx-open (and dbx-list-open-function
-                               (lambda () (funcall dbx-list-open-function id))))
+                               (let ((fn dbx-list-open-function))
+                                 (lambda () (dbx--row-call fn id)))))
                ('dbx-id (if (consp id) (car id) id))
                ('dbx-url (and dbx-list-url-function
-                              (funcall dbx-list-url-function id))))))
+                              (dbx--row-call dbx-list-url-function id))))))
       (get-text-property (point) prop)
       (and (> (point) (point-min)) (get-text-property (1- (point)) prop))
       (save-excursion
@@ -274,12 +315,15 @@ FOLDED non-nil folds the section on first render."
 (defun dbx-page-actions ()
   "Choose one of this page's actions."
   (interactive)
-  (if (null dbx-page-actions)
-      (describe-mode)
-    (let* ((choices (mapcar (lambda (a) (cons (format "%-4s %s" (nth 0 a) (nth 1 a)) (nth 2 a)))
-                            dbx-page-actions))
-           (pick (completing-read "Action: " choices nil t)))
-      (call-interactively (cdr (assoc pick choices))))))
+  (let ((actions (append dbx-page-actions
+                         (cl-loop for (mode . acts) in dbx-page-extra-actions
+                                  when (derived-mode-p mode) append acts))))
+    (if (null actions)
+        (describe-mode)
+      (let* ((choices (mapcar (lambda (a) (cons (format "%-4s %s" (nth 0 a) (nth 1 a)) (nth 2 a)))
+                              actions))
+             (pick (completing-read "Action: " choices nil t)))
+        (call-interactively (cdr (assoc pick choices)))))))
 
 ;;;; Auto refresh
 
@@ -296,17 +340,45 @@ FOLDED non-nil folds the section on first render."
                        nil
                        (lambda ()
                          (when (buffer-live-p buf)
-                           (with-current-buffer buf
+                           (dbx--in-buffer buf
                              (if (get-buffer-window buf 'visible)
                                  (dbx-page-refresh)
                                (dbx-page-schedule-refresh)))))))))
 
-(defun dbx-page-buffer (name mode)
-  "Return buffer NAME in MODE, creating it if needed."
-  (let ((buf (get-buffer-create name)))
+(defun dbx-page-buffer (kind id mode &optional context)
+  "Return the buffer for KIND (a string such as \"job\") and ID in CONTEXT.
+The buffer is found by (KIND ID CONTEXT-NAME), whatever its name, or
+created in MODE.  ID may be nil for lists.  CONTEXT (a name or plist)
+defaults to the active context of the calling buffer; the buffer
+keeps it in `dbx-buffer-context'.  Its name shows the context, e.g.
+\"*dbx job 42 [prod]*\"; see `dbx-page-rename'."
+  (let* ((ctx (if context (dbx--resolve-context context) (dbx-context)))
+         (cname (dbx-context-name ctx))
+         (id (and id (format "%s" id)))
+         (key (list kind id cname))
+         (buf (or (cl-find-if (lambda (b) (equal (buffer-local-value 'dbx-page--key b) key))
+                              (buffer-list))
+                  (generate-new-buffer (dbx-page--name kind id cname)))))
     (with-current-buffer buf
-      (unless (derived-mode-p mode) (funcall mode)))
+      (unless (derived-mode-p mode) (funcall mode))
+      (setq dbx-page--key key
+            dbx-buffer-context (dbx--context-ref ctx)))
     buf))
+
+(defun dbx-page--name (kind title context-name)
+  (format "*dbx %s%s [%s]*" kind (if title (concat " " title) "") context-name))
+
+(defun dbx-page-rename (title)
+  "Rename the current page after TITLE, keeping its kind and context.
+The buffer stays findable by `dbx-page-buffer'."
+  (pcase-let ((`(,kind ,_ ,cname) dbx-page--key))
+    (when kind
+      (rename-buffer (dbx-page--name (concat kind ":") title cname) t))))
+
+(defun dbx-page-display (buf &optional no-select)
+  "Pop to BUF unless NO-SELECT; return BUF."
+  (unless no-select (pop-to-buffer buf))
+  buf)
 
 (defun dbx-page-loading (buf what)
   "Show a loading line for WHAT in BUF if it is empty."

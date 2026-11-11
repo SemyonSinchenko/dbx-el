@@ -314,16 +314,18 @@ of lists of values.  No `org-table-align' pass is needed."
                            (or (dbx-get r 'status 'error 'message)
                                (dbx-get r 'status 'state))
                            done))
-      (run-at-time delay nil
-                   (lambda ()
-                     (if (not (and (buffer-live-p editor)
-                                   (buffer-local-value 'dbx-sql--running editor)))
-                         nil
-                       (dbx-api "get" (format "/api/2.0/sql/statements/%s" id)
-                                :error-callback (lambda (m) (dbx-sql--finish editor meta nil nil m done))
-                                :callback (lambda (r2)
-                                            (dbx-sql--progress editor meta r2 done
-                                                               (min 2.0 (* delay 1.5)))))))))))
+      (let ((ctx (dbx-context)))       ; the statement's context (we run in its callback)
+        (run-at-time delay nil
+                     (lambda ()
+                       (if (not (and (buffer-live-p editor)
+                                     (buffer-local-value 'dbx-sql--running editor)))
+                           nil
+                         (dbx-api "get" (format "/api/2.0/sql/statements/%s" id)
+                                  :context ctx
+                                  :error-callback (lambda (m) (dbx-sql--finish editor meta nil nil m done))
+                                  :callback (lambda (r2)
+                                              (dbx-sql--progress editor meta r2 done
+                                                                 (min 2.0 (* delay 1.5))))))))))))
 
 (defun dbx-sql--collect (editor meta r done)
   "Collect chunks of result R up to the row limit, then finish."

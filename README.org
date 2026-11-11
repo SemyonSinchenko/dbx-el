@@ -13,7 +13,7 @@ Consult, Marginalia and Embark.
 
 | What                    | Needed for                         | Notes                                                    |
 |-------------------------+------------------------------------+----------------------------------------------------------|
-| Emacs ≥ 30.1            | everything                         | no other Emacs packages are required                     |
+| Emacs ≥ 30.1            | everything                         | plus transient ≥ 0.7, which ships with Emacs 30           |
 | =databricks= CLI ≥ 1.25 | everything except the Python REPL  | the control plane; auth comes from =~/.databrickscfg=    |
 | uv                      | Python REPL, run-file              | the only Python-side requirement; it also provides Python |
 | Graphviz =dot=          | graphical graphs (optional)        | without it graphs are shown as text trees                |
@@ -24,14 +24,14 @@ From Git with the built-in package-vc (the package name must be given,
 because the repository name differs from the package name):
 
 #+begin_src emacs-lisp
-(package-vc-install '(dbx-el :url "https://example.invalid/dbx-el.git"))
+(package-vc-install '(dbx-el :url "https://github.com/SemyonSinchenko/dbx-el.git"))
 #+end_src
 
 or with =use-package= (Emacs 30):
 
 #+begin_src emacs-lisp
 (use-package dbx-el
-  :vc (:url "https://example.invalid/dbx-el.git" :rev :newest)
+  :vc (:url "https://github.com/SemyonSinchenko/dbx-el.git" :rev :newest)
   :bind-keymap ("C-c d" . dbx-command-map)
   :config (dbx-mode-line-mode 1))
 #+end_src
@@ -80,6 +80,7 @@ It must contain =databricks-connect= and must not contain =pyspark= or
 | Key   | Command                   | Key   | Command                  |
 |-------+---------------------------+-------+--------------------------|
 | =d=   | menu                      | =x=   | select context           |
+| =o=   | open ID or URL            |       |                          |
 | =j=   | find job                  | =J=   | jobs list                |
 | =r=   | find run                  | =R=   | active runs              |
 | =c=   | find cluster              | =C=   | clusters list            |
@@ -109,6 +110,18 @@ items, =M-n=/=M-p= sections, =]=/=[= newer/older, =w=/=W= copy id/URL,
 Destructive actions (cancel, terminate, deploy, destroy, full refresh)
 always ask first.  Runs started from Emacs are watched and produce a
 desktop notification when they finish.
+
+=C-c d o= (=dbx-open=) opens a page from a bare id or a workspace URL
+pasted from Slack or an alert e-mail: jobs, runs, clusters, warehouses
+and pipelines, including the legacy =#job/…= forms.  The latest kill is
+the default.  A URL whose host belongs to one of your contexts opens in
+that context.
+
+Each page and list keeps the context of the buffer it was opened from
+(for example a project buffer whose =.dir-locals.el= says =prod=), for
+refreshes, actions and the pages opened from it.  The context name is
+part of the buffer name: =*dbx job: etl-job [prod]*=.  The same id in
+two contexts gets two buffers.
 
 ** SQL
 
@@ -141,6 +154,78 @@ operations it started (by tag).
 =databricks.yml=: Flymake diagnostics from =bundle validate=, and
 =C-c C-b= for the bundle menu (summary, graph, validate, plan, deploy,
 run, destroy, target).
+
+* Extending
+
+These functions and variables are the public API for user code
+(dashboards, favorites, Org links, ...).  Names with a double dash are
+internal and may change.
+
+** Contexts
+
+- =(dbx-with-context CONTEXT BODY...)= runs BODY with CONTEXT (a name
+  or plist) active.  Calls started in BODY, their callbacks and pages
+  opened from them all use it.
+- =(dbx-context)= is the active context plist, resolved in this order:
+  =dbx-with-context= (CLI callbacks run inside one bound to the context
+  of their call), the buffer's own =dbx-buffer-context= (pages and
+  lists), =dbx-project-context= (dir-locals), =dbx-current-context-name=,
+  the first of =dbx-contexts=.
+- =(dbx-context-name &optional CTX)=, =(dbx-context-by-name NAME)=,
+  =(dbx-context-for-host HOST)=.
+- =dbx-api=, =dbx-api-pages= and =dbx-cli= take =:context=; their
+  callbacks run in that context.
+
+** Opening objects
+
+=dbx-job-page=, =dbx-run-page=, =dbx-cluster-page=,
+=dbx-warehouse-page= and =dbx-pipeline-page= take =(ID &optional
+CONTEXT NO-SELECT)= and return the page buffer.  With NO-SELECT the page
+is prepared without being displayed.  =dbx-jobs=, =dbx-runs=,
+=dbx-clusters=, =dbx-warehouses= and =dbx-pipelines= take an optional
+CONTEXT.  =(dbx-open REF)= opens an id or URL;
+=(dbx-parse-object-ref STRING)= only parses it.
+
+** Objects at point and runs
+
+- =(dbx-job-at-point)= returns =(:id ID :name NAME :context CTX-NAME)=
+  in job and run pages and in the jobs and runs lists, else nil.
+  =(dbx-run-at-point)= returns =(:id :job-id :name :context)= in run
+  pages, on runs in job pages and in the runs list.  Neither prompts.
+- =(dbx-job-latest-runs JOB-ID N CALLBACK &key CONTEXT ERROR-CALLBACK)=
+  fetches the N latest runs without tasks, newest first.
+- =(dbx-runs-glyph-strip RUNS)= is the status strip used in the jobs
+  list and picker, oldest first.
+- =(dbx-watch-run RUN-ID &optional CONTEXT)= watches a run.
+  =dbx-run-finished-functions= is called with =(RUN CONTEXT-NAME)= when
+  a watched run ends.
+
+** Pages and lists
+
+Derive from =dbx-page-mode= (text pages) or =dbx-list-mode=
+(tabulated lists) and use these buffer-local variables:
+
+| Variable / function            | Purpose                                                          |
+|--------------------------------+------------------------------------------------------------------|
+| =dbx-page-refresh-function=    | no-argument function that fetches and re-renders (=g=)           |
+| =dbx-page-active-p=            | non-nil while something runs: refresh every =dbx-page-refresh-active= s |
+| =dbx-page-schedule-refresh=    | call after rendering to schedule the next refresh                |
+| =dbx-page-refresh-active=, =-idle= | may be set buffer-locally, e.g. to poll a big dashboard less |
+| =dbx-page-actions=             | list of =(KEY DESCRIPTION COMMAND)= offered by =?=               |
+| =dbx-page-extra-actions=       | global alist =(MODE . ((KEY DESCRIPTION COMMAND) ...))= for =?=  |
+| =dbx-list-open-function=       | called with the row id by =RET=                                  |
+| =dbx-list-url-function=        | returns the URL of a row id, for =W= and =o=                     |
+| =dbx-list-set-entries=         | show entries, keeping the current =/= filter                     |
+| =dbx-page-buffer=              | find or create a buffer by =(KIND ID CONTEXT)=                   |
+| =dbx-page-rename=              | rename a page after its object, keeping kind and context         |
+
+Row ids may be =(ID . CONTEXT)=: =RET=, =o=, =W= then call the open and
+URL functions with ID while CONTEXT is active, and =w= copies ID.  This
+lets one list show objects from several workspaces.  =dbx-list-row-id=
+and =dbx-list-row-context= read the row at point.
+
+The suffix keys of =dbx-dispatch= are stable, so they can be used as
+=transient-append-suffix= anchors.
 
 * Development
 

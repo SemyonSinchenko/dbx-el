@@ -35,6 +35,11 @@
   "Non-nil to watch runs started from Emacs automatically."
   :type 'boolean :group 'dbx)
 
+(defvar dbx-run-finished-functions nil
+  "Abnormal hook run when a watched run reaches a terminal state.
+Each function is called with the run object (as returned by
+runs/get) and the name of the context it ran in.")
+
 ;;;; API
 
 (defun dbx-jobs-fetch (callback &optional error-callback force)
@@ -62,6 +67,14 @@
                      (limit . ,(min 25 dbx-job-page-runs))
                      ,@(and token `((page_token . ,token))))
            :callback callback :error-callback error-callback))
+
+(cl-defun dbx-job-latest-runs (job-id n callback &key context error-callback)
+  "Call CALLBACK with the N latest runs of JOB-ID, newest first.
+Runs are fetched without tasks, which keeps this cheap enough for a
+dashboard of many jobs.  CONTEXT defaults to the active context."
+  (dbx-api-pages "/api/2.2/jobs/runs/list" :items-key 'runs :max-items n
+                 :params `((job_id . ,job-id) (limit . ,(max 1 (min 25 n))))
+                 :context context :callback callback :error-callback error-callback))
 
 (defun dbx--principal-uuid-p (s)
   (and (stringp s)
@@ -148,6 +161,12 @@ Return NAME until the lookup finishes, then run
 (defun dbx-run-active-p (run)
   (memq (dbx-run-status run) '(running waiting blocked)))
 
+(defun dbx-runs-glyph-strip (runs)
+  "Status glyphs of RUNS (in any order) as one string, oldest first."
+  (mapconcat (lambda (r) (dbx-status-glyph (dbx-run-status r)))
+             (sort (copy-sequence runs) :key (lambda (r) (or (alist-get 'start_time r) 0)))
+             ""))
+
 ;;;; Pickers
 
 (defun dbx--jobs-candidates (jobs runs)
@@ -172,7 +191,7 @@ Return NAME until the lookup finishes, then run
            (last-run (car (last runs))))
       (concat
        (propertize " " 'display '(space :align-to 32))
-       (dbx-pad (mapconcat (lambda (r) (dbx-status-glyph (dbx-run-status r))) runs "") 10)
+       (dbx-pad (dbx-runs-glyph-strip runs) 10)
        "  "
        (propertize (dbx-pad (dbx-sparkline (mapcar #'dbx-run-duration runs)) 10) 'face 'dbx-dim)
        "  " (dbx-pad (dbx-job-schedule-short job) 9)
@@ -278,28 +297,34 @@ Return NAME until the lookup finishes, then run
 (defun dbx-job--rerender-all ()
   "Re-render job pages, e.g. after principal names were resolved."
   (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when (and (derived-mode-p 'dbx-job-page-mode) dbx-job--job)
-        (dbx-job--render)))))
+    (when (and (eq (buffer-local-value 'major-mode buf) 'dbx-job-page-mode)
+               (buffer-local-value 'dbx-job--job buf))
+      (dbx--in-buffer buf (dbx-job--render)))))
 
 (add-hook 'dbx-principal-resolved-hook #'dbx-job--rerender-all)
 
 ;;;###autoload
-(defun dbx-job-page (job-id)
-  "Open the page of JOB-ID."
-  (interactive (list (read-string "Job ID: ")))
-  (let ((buf (dbx-page-buffer (format "*dbx job %s*" job-id) #'dbx-job-page-mode)))
-    (with-current-buffer buf
+(defun dbx-job-page (job-id &optional context no-select)
+  "Open the page of JOB-ID in CONTEXT and return its buffer.
+CONTEXT (a name or plist) defaults to the active context.  With
+NO-SELECT, prepare the page without displaying it.  Interactively,
+read a job ID or a job or run URL; a URL of a known workspace opens
+in that workspace's context."
+  (interactive
+   (let ((ref (dbx-read-object-ref "Job ID or URL" '(job run))))
+     (list (or (plist-get ref :job-id) (plist-get ref :id)) (plist-get ref :context))))
+  (let ((buf (dbx-page-buffer "job" job-id #'dbx-job-page-mode context)))
+    (dbx--in-buffer buf
       (setq dbx-job--id job-id)
       (setq-local dbx-page-refresh-function #'dbx-job--refresh)
       (dbx-page-loading buf (format "job %s" job-id))
       (dbx-job--refresh))
-    (pop-to-buffer buf)))
+    (dbx-page-display buf no-select)))
 
 (defun dbx-job--refresh ()
   (let ((buf (current-buffer)) (id dbx-job--id)
         (token (car dbx-job--tokens)))
-    (dbx-api "get" "/api/2.2/jobs/get" :params `((job_id . ,id))
+    (dbx-api "get" "/api/2.2/jobs/get" :params `((job_id . ,id)) :context (dbx-context)
              :error-callback (lambda (m) (dbx-page-error buf m))
              :callback
              (lambda (job)
@@ -307,11 +332,11 @@ Return NAME until the lookup finishes, then run
                 id token
                 (lambda (page)
                   (when (buffer-live-p buf)
-                    (with-current-buffer buf
+                    (dbx--in-buffer buf
                       (setq dbx-job--job job
                             dbx-job--runs (alist-get 'runs page)
                             dbx-job--next-token (alist-get 'next_page_token page))
-                      (rename-buffer (format "*dbx job: %s*" (dbx-job-name job)) t)
+                      (dbx-page-rename (dbx-job-name job))
                       (setq dbx-page-active-p (cl-some #'dbx-run-active-p dbx-job--runs))
                       (dbx-job--render)
                       (dbx-page-schedule-refresh))))
@@ -401,7 +426,7 @@ Return NAME until the lookup finishes, then run
                           (dbx-run-status-label r)))
           (dbx-page-item start (1- (point))
                          'dbx-open (lambda () (dbx-run-page rid))
-                         'dbx-id rid
+                         'dbx-id rid 'dbx-run-id rid
                          'dbx-url (dbx-url (format "/jobs/%s/runs/%s" id rid)))))
       (insert "\n")
       ;; Tasks
@@ -452,7 +477,7 @@ Return NAME until the lookup finishes, then run
                                             'face (dbx-status-face (dbx-run-status r))))
                         (dbx-page-item start (point)
                                        'dbx-open (lambda () (dbx-run-page rid))
-                                       'dbx-id rid
+                                       'dbx-id rid 'dbx-run-id rid
                                        'dbx-url (dbx-url (format "/jobs/%s/runs/%s" jid rid))
                                        'help-echo (format "%s · %s · %s"
                                                           (dbx-format-time (alist-get 'start_time r))
@@ -485,7 +510,7 @@ Return NAME until the lookup finishes, then run
           (insert (dbx-status-glyph st))
           (dbx-page-item start (point)
                          'dbx-open (lambda () (dbx-run-page rid))
-                         'dbx-id rid
+                         'dbx-id rid 'dbx-run-id rid
                          'dbx-url (dbx-url (format "/jobs/%s/runs/%s" jid rid))
                          'help-echo (concat key " · " (dbx-format-time (alist-get 'start_time r))
                                             (mapconcat (lambda (a)
@@ -505,11 +530,58 @@ Return NAME until the lookup finishes, then run
 
 ;;;; Job actions
 
+(defvar dbx-jobs--jobs)
+
 (defun dbx--job-id-at-point ()
-  (or (and (derived-mode-p 'dbx-job-page-mode) dbx-job--id)
-      (and (boundp 'dbx-run--run) dbx-run--run (alist-get 'job_id dbx-run--run))
-      (and (derived-mode-p 'tabulated-list-mode) (tabulated-list-get-id))
+  (or (plist-get (dbx-job-at-point) :id)
       (read-string "Job ID: ")))
+
+(defun dbx-job-at-point ()
+  "The job at point as a plist (:id ID :name NAME :context CONTEXT-NAME).
+Works in job and run pages and in the jobs and runs lists; return
+nil elsewhere.  Never prompts."
+  (cond
+   ((derived-mode-p 'dbx-job-page-mode)
+    (and dbx-job--id
+         (list :id dbx-job--id :name (and dbx-job--job (dbx-job-name dbx-job--job))
+               :context (dbx-context-name))))
+   ((derived-mode-p 'dbx-run-page-mode)
+    (when-let* ((jid (alist-get 'job_id dbx-run--run)))
+      (list :id jid :name (alist-get 'run_name dbx-run--run) :context (dbx-context-name))))
+   ((derived-mode-p 'dbx-jobs-list-mode)
+    (when-let* ((id (dbx-list-row-id)))
+      (list :id id
+            :name (let ((job (cl-find id dbx-jobs--jobs :key (lambda (j) (alist-get 'job_id j))
+                                      :test #'equal)))
+                    (if job (dbx-job-name job) (aref (tabulated-list-get-entry) 1)))
+            :context (dbx-context-name (dbx-list-row-context)))))
+   ((derived-mode-p 'dbx-runs-list-mode)
+    (when-let* ((run (dbx-runs--run-at-point))
+                (jid (alist-get 'job_id run)))
+      (list :id jid :name (alist-get 'run_name run)
+            :context (dbx-context-name (dbx-list-row-context)))))))
+
+(defun dbx-run-at-point ()
+  "The run at point as a plist (:id :job-id :name :context), or nil.
+:context is the context name.  Works in run pages, on runs in job
+pages and in the runs list.  Never prompts."
+  (let ((mk (lambda (rid run ctx)
+              (and rid (list :id rid :job-id (alist-get 'job_id run)
+                             :name (alist-get 'run_name run)
+                             :context (dbx-context-name ctx))))))
+    (cond
+     ((derived-mode-p 'dbx-run-page-mode)
+      (funcall mk dbx-run--id dbx-run--run nil))
+     ((derived-mode-p 'dbx-job-page-mode)
+      (when-let* ((rid (or (get-text-property (point) 'dbx-run-id)
+                           (and (> (point) (point-min))
+                                (get-text-property (1- (point)) 'dbx-run-id)))))
+        (funcall mk rid (or (cl-find rid dbx-job--runs :key (lambda (r) (alist-get 'run_id r)))
+                            `((job_id . ,dbx-job--id)))
+                 nil)))
+     ((derived-mode-p 'dbx-runs-list-mode)
+      (when-let* ((run (dbx-runs--run-at-point)))
+        (funcall mk (alist-get 'run_id run) run (dbx-list-row-context)))))))
 
 (defun dbx--confirm-context-p ()
   (dbx-context-get :confirm))
@@ -527,7 +599,7 @@ Return NAME until the lookup finishes, then run
                :callback (lambda (r)
                            (let ((rid (alist-get 'run_id r)))
                              (message "dbx: started run %s" rid)
-                             (when dbx-watch-started-runs (dbx-watch-run rid))
+                             (when dbx-watch-started-runs (dbx-watch-run rid (dbx-context)))
                              (dbx-cache-clear)
                              (dbx-run-page rid)))))))
 
@@ -612,27 +684,33 @@ Return NAME until the lookup finishes, then run
                 ("G" "Task graph" dbx-run-graph)
                 ("j" "Job page" dbx-run-job-page)
                 ("f" "Watch" dbx-page-watch)))
-  (setq-local dbx-page-watch-function (lambda () (dbx-watch-run dbx-run--id))))
+  (setq-local dbx-page-watch-function (lambda () (dbx-watch-run dbx-run--id (dbx-context)))))
 
 ;;;###autoload
-(defun dbx-run-page (run-id)
-  "Open the page of job run RUN-ID."
-  (interactive (list (read-string "Run ID: ")))
-  (let ((buf (dbx-page-buffer (format "*dbx run %s*" run-id) #'dbx-run-page-mode)))
-    (with-current-buffer buf
+(defun dbx-run-page (run-id &optional context no-select)
+  "Open the page of job run RUN-ID in CONTEXT and return its buffer.
+CONTEXT (a name or plist) defaults to the active context.  With
+NO-SELECT, prepare the page without displaying it.  Interactively,
+read a run ID or a run URL."
+  (interactive
+   (let ((ref (dbx-read-object-ref "Run ID or URL" '(run) 'run)))
+     (list (plist-get ref :id) (plist-get ref :context))))
+  (let ((buf (dbx-page-buffer "run" run-id #'dbx-run-page-mode context)))
+    (dbx--in-buffer buf
       (setq dbx-run--id run-id)
       (setq-local dbx-page-refresh-function #'dbx-run--refresh)
       (dbx-page-loading buf (format "run %s" run-id))
       (dbx-run--refresh))
-    (pop-to-buffer buf)))
+    (dbx-page-display buf no-select)))
 
 (defun dbx-run--refresh ()
   (let ((buf (current-buffer)))
     (dbx-api "get" "/api/2.2/jobs/runs/get" :params `((run_id . ,dbx-run--id))
+             :context (dbx-context)
              :error-callback (lambda (m) (dbx-page-error buf m))
              :callback (lambda (run)
                          (when (buffer-live-p buf)
-                           (with-current-buffer buf
+                           (dbx--in-buffer buf
                              (setq dbx-run--run run)
                              (setq dbx-page-active-p (dbx-run-active-p run))
                              (dbx-run--render)
@@ -767,7 +845,7 @@ Return NAME until the lookup finishes, then run
 (defun dbx-run-repair ()
   "Repair this run: rerun chosen failed tasks."
   (interactive)
-  (let* ((run dbx-run--run)
+  (let* ((run dbx-run--run) (buf (current-buffer))
          (keys (dbx-task-keys (alist-get 'tasks run)))
          (failed (cl-remove-if-not
                   (lambda (k) (memq (dbx-run-task-status run k) '(failed cancelled)))
@@ -783,8 +861,10 @@ Return NAME until the lookup finishes, then run
                            '((rerun_all_failed_tasks . t))))
                :callback (lambda (_)
                            (message "dbx: repair started")
-                           (when dbx-watch-started-runs (dbx-watch-run (alist-get 'run_id run)))
-                           (dbx-page-refresh))))))
+                           (when dbx-watch-started-runs
+                             (dbx-watch-run (alist-get 'run_id run) (dbx-context)))
+                           (when (buffer-live-p buf)
+                             (dbx--in-buffer buf (dbx-page-refresh))))))))
 
 (defun dbx-run-rerun ()
   "Run the job of this run again with the same job parameters."
@@ -830,6 +910,11 @@ Return NAME until the lookup finishes, then run
 
 (defvar-local dbx-runs--active-only t)
 (defvar-local dbx-runs--job-id nil)
+(defvar-local dbx-runs--runs nil "Runs shown in the list.")
+
+(defun dbx-runs--run-at-point ()
+  (when-let* ((id (dbx-list-row-id)))
+    (cl-find id dbx-runs--runs :key (lambda (r) (alist-get 'run_id r)) :test #'equal)))
 
 (define-derived-mode dbx-runs-list-mode dbx-list-mode "DBX-Runs"
   "List of job runs."
@@ -837,7 +922,8 @@ Return NAME until the lookup finishes, then run
                                ("Start" 14 t) ("Duration" 11 nil :right-align t) ("Status" 12 t)])
   (setq-local dbx-list-open-function #'dbx-run-page)
   (setq-local dbx-page-refresh-function #'dbx-runs--refresh)
-  (setq-local dbx-page-watch-function (lambda () (dbx-watch-run (tabulated-list-get-id))))
+  (setq-local dbx-page-watch-function
+              (lambda () (dbx-watch-run (dbx-list-row-id) (dbx-list-row-context))))
   (setq-local dbx-page-actions '(("RET" "Open run" dbx-page-open)
                                  ("a" "Toggle active only" dbx-runs-toggle-active)
                                  ("f" "Watch" dbx-page-watch)))
@@ -845,12 +931,12 @@ Return NAME until the lookup finishes, then run
   (tabulated-list-init-header))
 
 ;;;###autoload
-(defun dbx-runs (&optional all job-id)
-  "List active runs; with prefix ALL, recent runs.  JOB-ID filters."
+(defun dbx-runs (&optional all job-id context)
+  "List active runs; with prefix ALL, recent runs.  JOB-ID filters.
+CONTEXT (a name or plist) defaults to the active context."
   (interactive "P")
-  (let ((buf (get-buffer-create (if job-id (format "*dbx runs %s*" job-id) "*dbx runs*"))))
-    (with-current-buffer buf
-      (dbx-runs-list-mode)
+  (let ((buf (dbx-page-buffer "runs" job-id #'dbx-runs-list-mode context)))
+    (dbx--in-buffer buf
       (setq dbx-runs--active-only (not all) dbx-runs--job-id job-id)
       (dbx-runs--refresh))
     (pop-to-buffer buf)))
@@ -877,7 +963,8 @@ Return NAME until the lookup finishes, then run
                    :callback
                    (lambda (runs)
                      (when (buffer-live-p buf)
-                       (with-current-buffer buf
+                       (dbx--in-buffer buf
+                         (setq dbx-runs--runs runs)
                          (setq dbx-page-active-p (cl-some #'dbx-run-active-p runs))
                          (dbx-list-set-entries
                           (mapcar (lambda (r)
@@ -893,6 +980,8 @@ Return NAME until the lookup finishes, then run
                          (dbx-page-schedule-refresh)))))))
 
 ;;;; Jobs list
+
+(defvar-local dbx-jobs--jobs nil "Jobs shown in the list.")
 
 (define-derived-mode dbx-jobs-list-mode dbx-list-mode "DBX-Jobs"
   "List of jobs."
@@ -911,13 +1000,11 @@ Return NAME until the lookup finishes, then run
   (tabulated-list-init-header))
 
 ;;;###autoload
-(defun dbx-jobs ()
-  "List jobs."
+(defun dbx-jobs (&optional context)
+  "List jobs in CONTEXT (default: the active context)."
   (interactive)
-  (let ((buf (get-buffer-create "*dbx jobs*")))
-    (with-current-buffer buf
-      (dbx-jobs-list-mode)
-      (dbx-jobs--refresh t))
+  (let ((buf (dbx-page-buffer "jobs" nil #'dbx-jobs-list-mode context)))
+    (dbx--in-buffer buf (dbx-jobs--refresh t))
     (pop-to-buffer buf)))
 
 (defun dbx-jobs--refresh (&optional cached)
@@ -927,13 +1014,14 @@ Return NAME until the lookup finishes, then run
        (dbx-recent-runs-fetch
         (lambda (runs)
           (when (buffer-live-p buf)
-            (with-current-buffer buf
+            (dbx--in-buffer buf
+              (setq dbx-jobs--jobs jobs)
               (dbx-list-set-entries
                (mapcar (lambda (c)
                          (let* ((job (cadr c)) (rs (last (cddr c) 10))
                                 (b (dbx-job-bundle job)))
                            (list (alist-get 'job_id job)
-                                 (vector (mapconcat (lambda (r) (dbx-status-glyph (dbx-run-status r))) rs "")
+                                 (vector (dbx-runs-glyph-strip rs)
                                          (car c)
                                          (if b (format "%s/%s" (car b) (or (cdr b) "")) "")
                                          (dbx-job-schedule-short job)
@@ -946,15 +1034,26 @@ Return NAME until the lookup finishes, then run
 
 ;;;; Watching
 
-(defvar dbx--watched nil "Alist of (RUN-ID . NAME) being watched.")
+(defvar dbx--watched nil
+  "Runs being watched: list of (RUN-ID CONTEXT . NAME).
+CONTEXT is a context name (or plist, for ad-hoc contexts).")
 (defvar dbx--watch-timer nil)
 
-(defun dbx-watch-run (run-id)
-  "Watch RUN-ID and notify when it reaches a terminal state."
+(defun dbx--watch-find (run-id context)
+  (let ((cname (dbx-context-name context)))
+    (cl-find-if (lambda (w) (and (equal (format "%s" (car w)) (format "%s" run-id))
+                                 (equal (dbx-context-name (cadr w)) cname)))
+                dbx--watched)))
+
+(defun dbx-watch-run (run-id &optional context)
+  "Watch RUN-ID in CONTEXT and notify when it reaches a terminal state.
+CONTEXT (a name or plist) defaults to the active context.  When the
+run ends, `dbx-run-finished-functions' run."
   (interactive (list (read-string "Run ID: ")))
-  (unless (assoc run-id dbx--watched)
-    (push (cons run-id nil) dbx--watched)
-    (message "dbx: watching run %s" run-id))
+  (let ((ctx (if context (dbx--resolve-context context) (dbx-context))))
+    (unless (dbx--watch-find run-id ctx)
+      (push (cons run-id (cons (dbx--context-ref ctx) nil)) dbx--watched)
+      (message "dbx: watching run %s [%s]" run-id (dbx-context-name ctx))))
   (unless (timerp dbx--watch-timer)
     (setq dbx--watch-timer (run-at-time dbx-watch-interval dbx-watch-interval #'dbx--watch-poll)))
   (force-mode-line-update t))
@@ -963,18 +1062,21 @@ Return NAME until the lookup finishes, then run
   (if (null dbx--watched)
       (progn (cancel-timer dbx--watch-timer) (setq dbx--watch-timer nil))
     (dolist (w dbx--watched)
-      (let ((rid (car w)))
+      (let ((rid (car w)) (ctx (cadr w)))
         (dbx-api "get" "/api/2.2/jobs/runs/get" :params `((run_id . ,rid))
+                 :context ctx
                  :error-callback #'ignore
                  :callback
                  (lambda (run)
-                   (unless (dbx-run-active-p run)
-                     (setq dbx--watched (cl-remove rid dbx--watched :key #'car :test #'equal))
+                   (when (and (memq w dbx--watched) (not (dbx-run-active-p run)))
+                     (setq dbx--watched (delq w dbx--watched))
                      (force-mode-line-update t)
                      (dbx-notify (format "%s %s" (or (alist-get 'run_name run) "Run")
                                          (dbx-run-status-label run))
                                  (format "Run %s finished in %s" rid
-                                         (dbx-format-duration (dbx-run-duration run)))))))))))
+                                         (dbx-format-duration (dbx-run-duration run))))
+                     (run-hook-with-args 'dbx-run-finished-functions
+                                         run (dbx-context-name ctx)))))))))
 
 (defun dbx-notify (title body)
   "Show a desktop notification with TITLE and BODY, or a message."
@@ -987,9 +1089,10 @@ Return NAME until the lookup finishes, then run
   "Pick a watched run and open it."
   (interactive)
   (if (null dbx--watched) (message "dbx: no watched runs")
-    (dbx-run-page (completing-read "Watched run: " (mapcar (lambda (w) (format "%s" (car w)))
-                                                           dbx--watched)
-                                   nil t))))
+    (let* ((cands (mapcar (lambda (w) (cons (format "%s [%s]" (car w) (dbx-context-name (cadr w))) w))
+                          dbx--watched))
+           (w (cdr (assoc (completing-read "Watched run: " cands nil t) cands))))
+      (dbx-run-page (car w) (cadr w)))))
 
 (defun dbx--watch-mode-line ()
   (when dbx--watched

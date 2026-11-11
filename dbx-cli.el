@@ -53,11 +53,15 @@
   "Run the Databricks CLI with ARGS asynchronously.
 CALLBACK receives the parsed JSON (or the raw output when JSON is
 nil).  ERROR-CALLBACK receives an error message string.  CONTEXT
-defaults to the active context.  DIRECTORY is the working directory.
-NO-PROFILE omits --profile (for commands that reject it)."
+\(a name or plist) defaults to the active context.  Both callbacks
+run with CONTEXT active (see `dbx-with-context'), so calls and pages
+they start use it too, whatever buffer is current.  DIRECTORY is
+the working directory.  NO-PROFILE omits --profile (for commands
+that reject it)."
   (let ((job (list :args args :callback callback
                    :error-callback (or error-callback #'dbx--cli-default-error)
-                   :context (or context (dbx-context)) :json json
+                   :context (if context (dbx--resolve-context context) (dbx-context))
+                   :json json
                    :directory (dbx--local-directory (or directory default-directory))
                    :no-profile no-profile)))
     (if (< dbx--cli-running dbx-cli-max-processes)
@@ -89,9 +93,15 @@ NO-PROFILE omits --profile (for commands that reject it)."
       (error
        (cl-decf dbx--cli-running)
        (kill-buffer out) (kill-buffer err)
-       (funcall (plist-get job :error-callback)
-                (format "cannot run %s: %s" dbx-cli-program (error-message-string e)))
+       (dbx--cli-call job :error-callback
+                      (format "cannot run %s: %s" dbx-cli-program (error-message-string e)))
        (dbx--cli-next)))))
+
+(defun dbx--cli-call (job key arg)
+  "Call JOB's KEY callback with ARG in JOB's context."
+  (when-let* ((fn (plist-get job key)))
+    (dbx-with-context (plist-get job :context)
+      (funcall fn arg))))
 
 (cl-defun dbx--cli-finish (proc job out err)
   (when-let* ((ep (get-buffer-process err)))
@@ -104,18 +114,16 @@ NO-PROFILE omits --profile (for commands that reject it)."
     (when (buffer-live-p err) (kill-buffer err))
     (dbx--cli-next)
     (if (/= code 0)
-        (funcall (plist-get job :error-callback)
-                 (dbx--cli-error-message stderr stdout code))
+        (dbx--cli-call job :error-callback (dbx--cli-error-message stderr stdout code))
       (let ((result (if (plist-get job :json)
                         (if (string-empty-p (string-trim stdout)) nil
                           (condition-case e (dbx-json-parse-string stdout)
-                            (error (funcall (plist-get job :error-callback)
-                                            (format "invalid JSON from CLI: %s"
-                                                    (error-message-string e)))
+                            (error (dbx--cli-call job :error-callback
+                                                  (format "invalid JSON from CLI: %s"
+                                                          (error-message-string e)))
                                    (cl-return-from dbx--cli-finish nil))))
                       stdout)))
-        (when-let* ((cb (plist-get job :callback)))
-          (funcall cb result))))))
+        (dbx--cli-call job :callback result)))))
 
 (defun dbx--cli-next ()
   (when (and dbx--cli-queue (< dbx--cli-running dbx-cli-max-processes))
@@ -196,7 +204,7 @@ FN receives (CALLBACK ERROR-CALLBACK).  \\[keyboard-quit] aborts."
   "Call CALLBACK with a cached value for KEY or fetch it.
 FETCH is called with a continuation.  TTL is in seconds.  FORCE
 bypasses the cache."
-  (let* ((k (cons (plist-get (dbx-context) :name) key))
+  (let* ((k (cons (dbx-context-name) key))
          (hit (gethash k dbx--cache)))
     (if (and hit (not force) (< (- (float-time) (car hit)) ttl))
         (funcall callback (cdr hit))

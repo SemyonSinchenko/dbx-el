@@ -303,6 +303,234 @@
     (should (equal (dbx-job-bundle job) '("soe" . "etl_prod")))
     (should (equal (dbx-job-schedule-short job) "hourly"))))
 
+;;;; Contexts in pages, callbacks and watches
+
+(defmacro dbx-test-with-contexts (&rest body)
+  "Run BODY with the fake CLI and contexts dev (global), prod and other.
+Pages never auto-refresh; dbx page buffers are killed afterwards."
+  (declare (indent 0))
+  `(dbx-test-with-fake-cli
+     (let ((dbx-contexts '((:name "dev" :profile "DEV" :host "https://dev.example.com")
+                           (:name "prod" :profile "PROD" :host "https://prod.example.com")
+                           (:name "other" :profile "OTHER")))
+           (dbx-current-context-name "dev")
+           (dbx-page-refresh-idle 3600) (dbx-page-refresh-active 3600)
+           (dbx-watch-started-runs nil)
+           (dbx--watched nil))
+       (save-window-excursion
+         (unwind-protect (progn ,@body)
+           (dolist (b (buffer-list))
+             (when (buffer-local-value 'dbx-page--key b) (kill-buffer b)))
+           (when (timerp dbx--watch-timer) (cancel-timer dbx--watch-timer))
+           (setq dbx--watch-timer nil))))))
+
+(defun dbx-test-idle ()
+  "Wait until no CLI process is running or queued, from a buffer whose
+context is \"other\", so a callback resolving the context from the
+current buffer would log --profile OTHER."
+  (with-temp-buffer
+    (setq-local dbx-project-context "other")
+    (dbx-test-wait (lambda () (and (zerop dbx--cli-running) (null dbx--cli-queue))))))
+
+(defun dbx-test-log-take ()
+  "Lines of the fake CLI log; the log is emptied."
+  (let ((file (getenv "DBX_FAKE_LOG")))
+    (prog1 (with-temp-buffer
+             (insert-file-contents file)
+             (seq-filter (lambda (l) (string-prefix-p "api " l))
+                         (split-string (buffer-string) "\n" t)))
+      (with-temp-file file))))
+
+(defun dbx-test-profiles (lines)
+  (delete-dups (mapcar (lambda (l) (and (string-match "--profile \\([A-Z]+\\)" l)
+                                        (match-string 1 l)))
+                       lines)))
+
+(ert-deftest dbx-test-context-precedence ()
+  (dbx-test-with-contexts
+    (should (equal (dbx-context-name) "dev"))
+    (with-temp-buffer
+      (setq-local dbx-project-context "other")
+      (should (equal (dbx-context-name) "other"))
+      (setq-local dbx-buffer-context "prod")
+      (should (equal (dbx-context-name) "prod"))
+      (dbx-with-context "dev" (should (equal (dbx-context-name) "dev")))
+      (dbx-with-context '(:name "adhoc" :profile "ADHOC")
+        (should (equal (dbx-context-profile) "ADHOC"))))))
+
+(ert-deftest dbx-test-callback-runs-in-call-context ()
+  ;; B1 at the API level: a call started in a callback inherits the
+  ;; context of the call, not that of the buffer current at exit.
+  (dbx-test-with-contexts
+    (let (done)
+      (dbx-with-context "prod"
+        (dbx-api "get" "/api/2.2/jobs/get" :params '((job_id . 1))
+                 :callback (lambda (_)
+                             (dbx-api "get" "/api/2.2/jobs/runs/get" :params '((run_id . 2))
+                                      :callback (lambda (_) (setq done t))))))
+      (dbx-test-idle)
+      (should done)
+      (let ((lines (dbx-test-log-take)))
+        (should (= (length lines) 2))
+        (should (equal (dbx-test-profiles lines) '("PROD")))))))
+
+(ert-deftest dbx-test-page-refresh-keeps-context ()
+  ;; B1: page refresh's nested runs/list uses the page's context.
+  (dbx-test-with-contexts
+    (let ((buf (dbx-job-page "222" "prod")))
+      (dbx-test-idle)
+      (dbx-test-log-take)
+      (with-current-buffer buf (dbx-job--refresh))
+      (dbx-test-idle)
+      (let ((lines (dbx-test-log-take)))
+        (should (cl-some (lambda (l) (string-match-p "runs/list" l)) lines))
+        (should (equal (dbx-test-profiles lines) '("PROD")))))))
+
+(ert-deftest dbx-test-page-inherits-caller-context ()
+  ;; B2: a page opened from a prod buffer is prod for good, including
+  ;; the run page opened by "run now".
+  (dbx-test-with-contexts
+    (let ((buf (with-temp-buffer
+                 (setq-local dbx-project-context "prod")
+                 (dbx-job-page "333"))))
+      (with-current-buffer buf (should (equal (dbx-context-name) "prod")))
+      (dbx-test-idle)
+      (should (equal (dbx-test-profiles (dbx-test-log-take)) '("PROD")))
+      (should (string-match-p "\\[prod\\]" (buffer-name buf)))
+      (with-current-buffer buf (dbx-job-run-now))
+      (dbx-test-idle)
+      (let ((lines (dbx-test-log-take)))
+        (should (cl-some (lambda (l) (string-match-p "run-now" l)) lines))
+        (should (cl-some (lambda (l) (string-match-p "runs/get\\?run_id=5005" l)) lines))
+        (should (equal (dbx-test-profiles lines) '("PROD"))))
+      (let ((run-buf (cl-find '("run" "5005" "prod")
+                              (buffer-list) :key (lambda (b) (buffer-local-value 'dbx-page--key b))
+                              :test #'equal)))
+        (should run-buf)
+        (with-current-buffer run-buf (should (equal (dbx-context-name) "prod")))))))
+
+(ert-deftest dbx-test-page-buffer-per-context ()
+  ;; B3: the same id in two contexts gives two buffers.
+  (dbx-test-with-contexts
+    (let ((a (dbx-job-page "555" "dev"))
+          (b (dbx-job-page "555" "prod")))
+      (should-not (eq a b))
+      (dbx-test-idle)
+      (dbx-test-log-take)
+      (with-current-buffer a (dbx-job--refresh))
+      (dbx-test-idle)
+      (should (equal (dbx-test-profiles (dbx-test-log-take)) '("DEV")))
+      (with-current-buffer b (dbx-job--refresh))
+      (dbx-test-idle)
+      (should (equal (dbx-test-profiles (dbx-test-log-take)) '("PROD"))))))
+
+(ert-deftest dbx-test-page-reopen-same-buffer ()
+  ;; B4: reopening after the rename finds the same buffer.
+  (dbx-test-with-contexts
+    (let ((a (dbx-job-page "444")))
+      (dbx-test-idle)
+      (should (equal (buffer-name a) "*dbx job: etl-job [dev]*"))
+      (should (eq a (dbx-job-page "444")))
+      (dbx-test-idle)
+      (should (eq a (dbx-job-page 444)))
+      (dbx-test-idle)
+      (should (= 1 (cl-count-if (lambda (b) (equal (buffer-local-value 'dbx-page--key b)
+                                                   '("job" "444" "dev")))
+                                (buffer-list)))))))
+
+(ert-deftest dbx-test-watch-keeps-context ()
+  ;; Watches remember their context; F5 hook gets run and context name.
+  (dbx-test-with-contexts
+    (let* ((buf (dbx-run-page 1001 "prod"))
+           (finished nil)
+           (dbx-run-finished-functions
+            (list (lambda (run ctx) (push (cons (alist-get 'run_id run) ctx) finished)))))
+      (dbx-test-idle)
+      (dbx-test-log-take)
+      (with-current-buffer buf (dbx-page-watch))
+      (should (equal (cadr (car dbx--watched)) "prod"))
+      (cl-letf (((symbol-function 'dbx-notify) #'ignore))
+        (dbx--watch-poll)
+        (dbx-test-idle))
+      (should (equal (dbx-test-profiles (dbx-test-log-take)) '("PROD")))
+      (should (equal finished '((1001 . "prod"))))
+      (should (null dbx--watched)))))
+
+(ert-deftest dbx-test-at-point-helpers ()
+  (dbx-test-with-contexts
+    (let ((buf (dbx-job-page 42 "prod")))
+      (dbx-test-idle)
+      (with-current-buffer buf
+        (should (equal (dbx-job-at-point) '(:id 42 :name "etl-job" :context "prod")))
+        (goto-char (point-min))
+        (re-search-forward "^  preflight +")
+        (should (equal (plist-get (dbx-run-at-point) :id) 1001))
+        (should (equal (plist-get (dbx-run-at-point) :context) "prod"))))
+    (with-temp-buffer (should (null (dbx-job-at-point))))
+    (should (equal (substring-no-properties
+                    (dbx-runs-glyph-strip '(((start_time . 2) (status (state . "RUNNING")))
+                                            ((start_time . 1)
+                                             (status (state . "TERMINATED")
+                                                     (termination_details (code . "SUCCESS")))))))
+                   "✔⟳"))))
+
+(ert-deftest dbx-test-list-row-context ()
+  ;; F4: row ids (ID . CONTEXT) open and browse in the row's context.
+  (dbx-test-with-contexts
+    (with-temp-buffer
+      (dbx-list-mode)
+      (let (opened)
+        (setq tabulated-list-format [("Name" 10 nil)])
+        (setq-local dbx-list-open-function
+                    (lambda (id) (setq opened (list id (dbx-context-name)))))
+        (setq-local dbx-list-url-function (lambda (id) (dbx-url (format "/jobs/%s" id))))
+        (tabulated-list-init-header)
+        (dbx-list-set-entries '((("7" . "prod") ["a"])))
+        (goto-char (point-min))
+        (dbx-page-open)
+        (should (equal opened '("7" "prod")))
+        (should (equal (dbx-page--prop 'dbx-url) "https://prod.example.com/jobs/7"))
+        (should (equal (dbx-page--prop 'dbx-id) "7"))))))
+
+(ert-deftest dbx-test-parse-object-ref ()
+  (dbx-test-with-contexts
+    (should (equal (dbx-parse-object-ref "https://prod.example.com/jobs/123?o=99")
+                   '(:kind job :id "123" :host "https://prod.example.com" :context "prod")))
+    (should (equal (dbx-parse-object-ref "https://dev.example.com/jobs/12/runs/34?o=1")
+                   '(:kind run :id "34" :job-id "12" :host "https://dev.example.com"
+                           :context "dev")))
+    (should (equal (dbx-parse-object-ref "https://x.example.com/?o=1#job/5/run/6")
+                   '(:kind run :id "6" :job-id "5" :host "https://x.example.com" :context nil)))
+    (should (equal (plist-get (dbx-parse-object-ref
+                               "https://prod.example.com/compute/clusters/0612-123456-abcd/configuration")
+                              :id)
+                   "0612-123456-abcd"))
+    (should (equal (plist-get (dbx-parse-object-ref
+                               "https://prod.example.com/?o=1#setting/clusters/0612-123456-abcd/configuration")
+                              :kind)
+                   'cluster))
+    (should (equal (plist-get (dbx-parse-object-ref
+                               "https://prod.example.com/sql/warehouses/1a2b3c4d5e6f7a8b?o=1")
+                              :kind)
+                   'warehouse))
+    (should (equal (dbx-parse-object-ref
+                    "https://prod.example.com/pipelines/0e1f2a3b-4c5d-6e7f-8a9b-0c1d2e3f4a5b/updates")
+                   '(:kind pipeline :id "0e1f2a3b-4c5d-6e7f-8a9b-0c1d2e3f4a5b"
+                           :host "https://prod.example.com" :context "prod")))
+    (should (equal (dbx-parse-object-ref " 42 ") '(:kind job :id "42")))
+    (should (equal (dbx-parse-object-ref "42" 'run) '(:kind run :id "42")))
+    (should (equal (dbx-parse-object-ref "0612-123456-abcd") '(:kind cluster :id "0612-123456-abcd")))
+    (should (equal (dbx-parse-object-ref "1a2b3c4d5e6f7a8b") '(:kind warehouse :id "1a2b3c4d5e6f7a8b")))
+    (should-not (dbx-parse-object-ref "hello"))
+    (should-not (dbx-parse-object-ref "https://prod.example.com/explore"))))
+
+(ert-deftest dbx-test-open-url-uses-host-context ()
+  (dbx-test-with-contexts
+    (let ((buf (dbx-open "https://prod.example.com/jobs/777?o=1")))
+      (should (equal (buffer-local-value 'dbx-page--key buf) '("job" "777" "prod")))
+      (dbx-test-idle)
+      (should (equal (dbx-test-profiles (dbx-test-log-take)) '("PROD"))))))
+
 ;;;; Graphs
 
 (defun dbx-test-job-graph ()

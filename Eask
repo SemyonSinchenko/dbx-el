@@ -6,7 +6,7 @@
 
 (keywords "tools" "data" "sql")
 
-(website-url "https://example.invalid/dbx-el")
+(website-url "https://github.com/SemyonSinchenko/dbx-el")
 
 (package-file "dbx-el.el")
 
@@ -17,5 +17,6 @@
 (source 'gnu)
 
 (depends-on "emacs" "30.1")
+(depends-on "transient" "0.7")
 
 (setq network-security-level 'high)
