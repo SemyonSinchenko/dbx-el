@@ -117,6 +117,67 @@
 
 ;;;; SQL
 
+;;;; Glyphs and alignment
+
+(ert-deftest dbx-test-glyph-auto-per-glyph ()
+  ;; B8: `auto' falls back to ASCII per glyph, not for the whole set,
+  ;; and bars go ASCII when any block character doesn't fit.
+  (cl-letf (((symbol-function 'dbx--char-fits-p) (lambda (c) (not (memq c '(?⊘ ?▁))))))
+    (let ((res (dbx--glyphs-auto)))
+      (should (equal (alist-get 'success (car res)) "✔"))
+      (should (equal (alist-get 'skipped (car res)) "-"))
+      (should (equal (alist-get 'cancelled (car res)) "-"))
+      (should (equal (alist-get 'blocked (car res)) "■"))
+      (should (cdr res))))
+  (cl-letf (((symbol-function 'dbx--char-fits-p) #'always))
+    (should (equal (car (dbx--glyphs-auto)) dbx--glyphs-unicode))
+    (should-not (cdr (dbx--glyphs-auto))))
+  ;; B9: a two-column (ambiguous width) glyph doesn't fit
+  (let ((char-width-table (make-char-table nil)))
+    (set-char-table-range char-width-table ?⊘ 2)
+    (should-not (dbx--char-fits-p ?⊘))))
+
+(defun dbx-test-align-tos (pos)
+  "Columns of the `(space :align-to N)' spacers on the line at POS."
+  (save-excursion
+    (goto-char pos)
+    (let ((end (line-end-position)) cols)
+      (beginning-of-line)
+      (while (< (point) end)
+        (let ((d (get-text-property (point) 'display)))
+          (when (eq (car-safe d) 'space) (push (plist-get (cdr d) :align-to) cols)))
+        (forward-char))
+      (nreverse cols))))
+
+(ert-deftest dbx-test-job-matrix-and-chart-aligned ()
+  ;; B6, B9: every chart and matrix cell ends at an absolute column, the
+  ;; same in all rows, whatever glyph it holds.  B7: a label as wide as
+  ;; the gutter is still followed by a blank column.
+  (dbx-test-with-fake-cli
+    (let* ((runs (reverse (alist-get 'runs (dbx-test-fixture "runs_list.json"))))
+           (n (length runs))
+           (long "soe_etl_job_peak_early")
+           (expected (cl-loop for i from 0 to n collect (+ dbx--gutter (* 2 i)))))
+      (should (= (string-width long) (- dbx--gutter 2)))
+      (with-temp-buffer
+        (setq-local dbx-job--id 42)
+        (dbx-job--insert-chart runs)
+        (dbx-job--insert-matrix runs (list "preflight" "job_peak_early" long))
+        (goto-char (point-min))
+        (re-search-forward "┤")
+        (should (equal (dbx-test-align-tos (point)) expected))
+        (dolist (key (list "preflight" "job_peak_early"))
+          (goto-char (point-min))
+          (re-search-forward (concat "^  " key " "))
+          (should (equal (dbx-test-align-tos (point)) expected)))
+        (goto-char (point-min))
+        (should (re-search-forward "^  soe_etl_job_peak_ear… ·" nil t))
+        (should (equal (dbx-test-align-tos (point)) expected))
+        ;; the axis ends with the last cell
+        (goto-char (point-min))
+        (re-search-forward "└\\(─+\\)$")
+        (should (= (current-column) (+ dbx--gutter (* 2 n))))))))
+
 (ert-deftest dbx-test-sql-statement-splitting ()
   (let ((text "select 1;\n-- comment; not a split\nselect 'a;b', \"c;d\", `e;f`;\n/* block; */ select 2 ;;  \n select 'it''s; fine'; -- trailing\n"))
     (should (equal (mapcar (lambda (b) (substring text (car b) (cdr b)))
@@ -437,6 +498,76 @@ current buffer would log --profile OTHER."
       (should (= 1 (cl-count-if (lambda (b) (equal (buffer-local-value 'dbx-page--key b)
                                                    '("job" "444" "dev")))
                                 (buffer-list)))))))
+
+(defun dbx-test-page (kind id context)
+  "The page buffer for KIND, ID and CONTEXT, or nil."
+  (cl-find (list kind id context) (buffer-list)
+           :key (lambda (b) (buffer-local-value 'dbx-page--key b)) :test #'equal))
+
+(ert-deftest dbx-test-graphs-open-in-page-context ()
+  ;; B10: graphs open from job, run and pipeline pages, are keyed by
+  ;; the object's id, and keep the page's context for node actions.
+  (dbx-test-with-contexts
+    (let ((dbx-graph-prefer-text t)
+          (job (dbx-job-page "42" "prod")))
+      (dbx-test-idle)
+      (let ((g (with-current-buffer job (dbx-job-graph))))
+        (should (eq g (dbx-test-page "job-graph" "42" "prod")))
+        (should (equal (buffer-name g) "*dbx job-graph: etl-job [prod]*"))
+        (with-current-buffer g
+          (should (derived-mode-p 'dbx-graph-mode))
+          (should (equal (dbx-context-name) "prod"))
+          (should (string-match-p "preflight" (buffer-string)))
+          ;; a node opens the latest run, in prod
+          (dbx-graph-open-node "preflight"))
+        (should (dbx-test-page "run" "3003" "prod"))
+        (should (eq g (with-current-buffer job (dbx-graph-dwim)))))
+      (let ((run (dbx-run-page "1001" "prod")))
+        (dbx-test-idle)
+        (let ((g (with-current-buffer run (dbx-graph-dwim))))
+          (should (eq g (dbx-test-page "run-graph" "1001" "prod")))
+          (with-current-buffer g (should (derived-mode-p 'dbx-graph-mode)))))
+      (let ((p (dbx-page-buffer "pipeline" "p-1" #'dbx-pipeline-page-mode "prod")))
+        (with-current-buffer p
+          (setq dbx-pipeline--id "p-1"
+                dbx-pipeline--data '((name . "dlt"))
+                dbx-pipeline--events (alist-get 'events (dbx-test-fixture "pipeline_events.json")))
+          (dbx-pipeline-graph))
+        (let ((g (dbx-test-page "pipeline-graph" "p-1" "prod")))
+          (should g)
+          (with-current-buffer g
+            (should (derived-mode-p 'dbx-graph-mode))
+            (should (equal (dbx-context-name) "prod"))))))))
+
+(ert-deftest dbx-test-bundle-summary-and-graph ()
+  ;; B10: the bundle summary and the bundle graph open, in the context
+  ;; of the buffer they are started from.
+  (dbx-test-with-contexts
+    (let* ((dbx-graph-prefer-text t)
+           (dir (file-name-as-directory (make-temp-file "bundle" t))))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "databricks.yml" dir) (insert "bundle:\n  name: soe\n"))
+            (let ((s (with-temp-buffer
+                       (setq default-directory dir)
+                       (setq-local dbx-project-context "prod")
+                       (dbx-bundle-summary t))))
+              (should (eq s (dbx-test-page "bundle" dir "prod")))
+              (dbx-test-idle)
+              (with-current-buffer s
+                (should (derived-mode-p 'dbx-bundle-summary-mode))
+                (should (equal default-directory dir))
+                (should (string-match-p "Bundle soe" (buffer-string)))
+                (should (string-match-p "etl-job" (buffer-string)))
+                (dbx-bundle-graph))
+              (dbx-test-idle)
+              (let ((g (dbx-test-page "bundle-graph" dir "prod")))
+                (should g)
+                (with-current-buffer g
+                  (should (derived-mode-p 'dbx-graph-mode))
+                  (should (equal (dbx-context-name) "prod"))
+                  (should (string-match-p "Bundle soe" (buffer-string)))))))
+        (delete-directory dir t)))))
 
 (ert-deftest dbx-test-watch-keeps-context ()
   ;; Watches remember their context; F5 hook gets run and context name.

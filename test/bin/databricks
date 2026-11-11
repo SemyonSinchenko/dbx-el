@@ -18,6 +18,7 @@ case "$args" in
   *"api post /api/2.2/jobs/run-now"*)
      [ -n "$DBX_FAKE_LOG" ] && json_arg "$@" >> "$DBX_FAKE_LOG" && echo >> "$DBX_FAKE_LOG"
      echo '{"run_id": 5005}';;
+  "bundle summary"*|"bundle validate"*"-o json"*) cat "$dir/bundle_summary.json";;
   *"api get /api/2.0/fail"*) echo "Error: boom from fake" >&2; exit 1;;
   *) echo "Error: fake CLI has no fixture for: $args" >&2; exit 1;;
 esac

@@ -52,9 +52,16 @@
 (defcustom dbx-glyph-style 'auto
   "Glyph set used in pages, lists and picker annotations.
 `unicode' uses symbols such as ✔ and ✘, `ascii' uses plain
-characters, `auto' picks `unicode' when the default font can
-display it."
+characters.  `auto' uses the Unicode glyph wherever the frame draws
+it exactly one column wide, and the ASCII one elsewhere: a glyph
+missing from the default font comes from a fallback font, often
+wider, which would break column alignment.  `auto' is resolved per
+frame and again when the frame's font changes; setting this option
+\(e.g. with `setopt') also re-checks, say after `set-fontset-font'."
   :type '(choice (const auto) (const unicode) (const ascii))
+  :set (lambda (sym val)
+         (set-default sym val)
+         (dolist (f (frame-list)) (set-frame-parameter f 'dbx--glyphs nil)))
   :group 'dbx)
 
 (defconst dbx--glyphs-unicode
@@ -73,19 +80,49 @@ display it."
     (null . "NULL") (ellipsis . "~"))
   "ASCII fallback glyphs.")
 
-(defvar dbx--glyph-style-resolved nil)
+(defconst dbx--bar-chars "▁▂▃▄▅▆▇█▏▎▍▌▋▊▉"
+  "Block characters used by bars, sparklines and charts.")
+
+(defun dbx--char-fits-p (char)
+  "Non-nil if the selected frame draws CHAR exactly one column wide."
+  (and (= (char-width char) 1)
+       (let ((font (char-displayable-p char)))
+         (cond ((not font) nil)
+               ((not (display-graphic-p)) t)
+               ;; GUI: the font may be a fallback font of another width
+               ((fontp font)
+                (let ((g (aref (font-get-glyphs font 0 1 (string char)) 0)))
+                  (and g (= (aref g 4) (frame-char-width)))))
+               (t t)))))
+
+(defun dbx--glyphs-auto ()
+  "Resolve the `auto' glyph set for the selected frame.
+Return a cons (GLYPHS . ASCII-BARS)."
+  (cons (cl-loop for (name . u) in dbx--glyphs-unicode
+                 collect (cons name (if (cl-every #'dbx--char-fits-p u) u
+                                      (alist-get name dbx--glyphs-ascii))))
+        (not (cl-every #'dbx--char-fits-p dbx--bar-chars))))
+
+(defun dbx--glyph-resolution ()
+  "Return (GLYPHS . ASCII-BARS) for the current buffer's frame.
+With `auto', the result is cached per frame and recomputed when the
+frame's font or `char-width-table' changes."
+  (pcase dbx-glyph-style
+    ('ascii (cons dbx--glyphs-ascii t))
+    ((or 'unicode (guard noninteractive)) (cons dbx--glyphs-unicode nil))
+    (_ (let* ((win (get-buffer-window nil t))
+              (frame (if win (window-frame win) (selected-frame)))
+              (key (cons (frame-parameter frame 'font) char-width-table))
+              (cache (frame-parameter frame 'dbx--glyphs)))
+         (if (and cache (equal (caar cache) (car key)) (eq (cdar cache) (cdr key)))
+             (cdr cache)
+           (let ((res (with-selected-frame frame (dbx--glyphs-auto))))
+             (set-frame-parameter frame 'dbx--glyphs (cons key res))
+             res))))))
 
 (defun dbx--glyph-set ()
   "Return the active glyph alist."
-  (let ((style (if (eq dbx-glyph-style 'auto)
-                   (or dbx--glyph-style-resolved
-                       (setq dbx--glyph-style-resolved
-                             (if (or noninteractive
-                                     (cl-every (lambda (c) (char-displayable-p c))
-                                               '(?✔ ?✘ ?⟳ ?⊘ ?▁ ?█)))
-                                 'unicode 'ascii)))
-                 dbx-glyph-style)))
-    (if (eq style 'ascii) dbx--glyphs-ascii dbx--glyphs-unicode)))
+  (car (dbx--glyph-resolution)))
 
 (defun dbx-glyph (name)
   "Return the glyph string for NAME."
@@ -299,6 +336,13 @@ TZ is appended when given.  Unknown patterns return EXPR."
 
 ;;;; Text layout
 
+(defun dbx-align-to (column)
+  "Return a space displayed as a stretch up to COLUMN.
+COLUMN counts canonical character widths from the window's left
+edge, so text after it starts at the same x position whatever the
+pixel width of the glyphs before it."
+  (propertize " " 'display `(space :align-to ,column)))
+
 (defun dbx-pad (string width &optional right)
   "Pad or truncate STRING to WIDTH columns; RIGHT aligns right."
   (let* ((s (or string ""))
@@ -311,7 +355,9 @@ TZ is appended when given.  Unknown patterns return EXPR."
 (defconst dbx--eighths-v [" " "▁" "▂" "▃" "▄" "▅" "▆" "▇" "█"])
 (defconst dbx--eighths-h ["" "▏" "▎" "▍" "▌" "▋" "▊" "▉" "█"])
 
-(defun dbx--ascii-p () (eq (dbx--glyph-set) dbx--glyphs-ascii))
+(defun dbx--ascii-p ()
+  "Non-nil if bars and charts should use ASCII instead of block characters."
+  (cdr (dbx--glyph-resolution)))
 
 (defun dbx-hbar (value max width)
   "Horizontal bar for VALUE out of MAX in at most WIDTH columns."

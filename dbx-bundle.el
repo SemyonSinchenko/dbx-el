@@ -217,20 +217,20 @@
                 ("d" "Deploy" dbx-bundle-deploy) ("G" "Graph" dbx-bundle-graph))))
 
 ;;;###autoload
-(defun dbx-bundle-summary ()
-  "Show the summary page of the bundle."
+(defun dbx-bundle-summary (&optional no-select)
+  "Show the summary page of the bundle and return its buffer.
+With NO-SELECT, don't display it."
   (interactive)
   (let* ((root (dbx-bundle--root))
-         (buf (dbx-page-buffer (format "*dbx bundle: %s*" (file-name-nondirectory
-                                                           (directory-file-name root)))
-                               #'dbx-bundle-summary-mode)))
+         (buf (dbx-page-buffer "bundle" root #'dbx-bundle-summary-mode)))
     (with-current-buffer buf
+      (dbx-page-rename (file-name-nondirectory (directory-file-name root)))
       (setq dbx-bundle--root-dir root)
       (setq default-directory root)
       (setq-local dbx-page-refresh-function #'dbx-bundle--summary-refresh)
       (dbx-page-loading buf "bundle summary")
       (dbx-bundle--summary-refresh))
-    (pop-to-buffer buf)))
+    (dbx-page-display buf no-select)))
 
 (defun dbx-bundle--summary-refresh ()
   (let ((buf (current-buffer)))
@@ -355,7 +355,8 @@
              :directory root
              :callback (lambda (config)
                          (message nil)
-                         (dbx-graph-show (dbx-bundle-graph-from-config config))))))
+                         (dbx-graph-show (dbx-bundle-graph-from-config config)
+                                         "bundle-graph" root)))))
 
 ;;;; Flymake
 

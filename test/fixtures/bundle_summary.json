@@ -1,0 +1,18 @@
+{
+ "bundle": {"name": "soe", "target": "dev", "mode": "development"},
+ "workspace": {"host": "https://dev.example.com", "root_path": "/Workspace/Users/me/.bundle/soe/dev"},
+ "resources": {
+  "jobs": {
+   "etl": {
+    "id": "42",
+    "name": "etl-job",
+    "tasks": [
+     {"task_key": "a", "spark_python_task": {}},
+     {"task_key": "b", "depends_on": [{"task_key": "a"}],
+      "pipeline_task": {"pipeline_id": "${resources.pipelines.dlt.id}"}}
+    ]
+   }
+  },
+  "pipelines": {"dlt": {"name": "soe_dlt"}}
+ }
+}

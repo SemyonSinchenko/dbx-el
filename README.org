@@ -73,6 +73,25 @@ anything into it):
 It must contain =databricks-connect= and must not contain =pyspark= or
 =pyspark-client=.  =M-x dbx-doctor= checks this.
 
+** Glyphs
+
+Pages and lists show run states as glyphs (=✔ ✘ ⟳ ⊘ ■= ...) in grids
+that must line up.  With =dbx-glyph-style= =auto= (the default), each
+glyph the frame can't draw exactly one column wide (missing from your
+font and taken from a wider fallback font, or ambiguous-width and two
+columns wide) is replaced by its ASCII form; the rest stay Unicode.
+Grids are aligned with display specs either way.  To keep all
+glyphs Unicode, draw them from one font:
+
+#+begin_src emacs-lisp
+(dolist (c '(?✔ ?✘ ?⟳ ?○ ?■ ?⊘ ?· ?▲ ?● ?◆ ?◇ ?★ ?▶ ?∅ ?…))
+  (set-fontset-font t c "Symbols Nerd Font Mono" nil 'prepend))
+(setopt dbx-glyph-style 'auto)    ; re-check the glyphs
+;; or force a set: (setopt dbx-glyph-style 'unicode) / 'ascii
+#+end_src
+
+M-x describe-char on a glyph shows the font drawing it.
+
 * Usage
 
 =C-c d d= opens the menu.  Global keys under =C-c d=:
@@ -231,7 +250,7 @@ The suffix keys of =dbx-dispatch= are stable, so they can be used as
 
 #+begin_src sh
 eask install-deps
-eask run script test      # byte-compile + ERT (+ Python tests through uv)
+eask run script test      # byte-compile (warnings fail) + ERT (+ Python tests through uv)
 eask lint package
 uv run --no-project --with pytest pytest -q test/python
 #+end_src

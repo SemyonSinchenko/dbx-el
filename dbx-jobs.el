@@ -191,10 +191,10 @@ Return NAME until the lookup finishes, then run
            (last-run (car (last runs))))
       (concat
        (propertize " " 'display '(space :align-to 32))
-       (dbx-pad (dbx-runs-glyph-strip runs) 10)
-       "  "
-       (propertize (dbx-pad (dbx-sparkline (mapcar #'dbx-run-duration runs)) 10) 'face 'dbx-dim)
-       "  " (dbx-pad (dbx-job-schedule-short job) 9)
+       ;; glyphs may be wider than one column: realign after each
+       (dbx-runs-glyph-strip runs) (dbx-align-to 44)
+       (propertize (dbx-sparkline (mapcar #'dbx-run-duration runs)) 'face 'dbx-dim)
+       (dbx-align-to 56) (dbx-pad (dbx-job-schedule-short job) 9)
        "  " (propertize (dbx-pad (dbx-principal-name (alist-get 'creator_user_name job)) 22)
                         'face 'dbx-dim)
        "  " (if last-run (dbx-format-ago (alist-get 'start_time last-run)) "")))))
@@ -356,7 +356,16 @@ in that workspace's context."
     (pop dbx-job--tokens)
     (dbx-job--refresh)))
 
-(defconst dbx--gutter 24 "Width of the label gutter in job page charts.")
+(defconst dbx--gutter 24
+  "Column of the first run in the job page chart and matrix.
+Run I starts at column (+ dbx--gutter (* 2 I)) in both.")
+
+(defun dbx-job--cell-end (i)
+  "Spacer after the cell of run I in the chart and matrix.
+It ends the cell at an absolute column, so a glyph drawn wider than
+one column (fallback font, ambiguous width) does not shift the
+cells after it."
+  (dbx-align-to (+ dbx--gutter (* 2 i) 2)))
 
 (defun dbx-job--render ()
   (let* ((job dbx-job--job)
@@ -468,8 +477,9 @@ in that workspace's context."
                                      (0 (dbx-format-duration mx))
                                      (2 (dbx-format-duration (/ mx 2)))
                                      (_ ""))
-                                   (- dbx--gutter 4) t)
-                     (if (memq i '(0 2)) " ┤" " │"))
+                                   (- dbx--gutter 5) t)
+                     (if (memq i '(0 2)) " ┤" " │")
+                     (dbx-align-to dbx--gutter))
              (cl-loop for r in runs for c from 0 do
                       (let ((rid (alist-get 'run_id r))
                             (start (point)))
@@ -484,9 +494,9 @@ in that workspace's context."
                                                           (dbx-format-duration (dbx-run-duration r))
                                                           (dbx-run-status-label r)))
                         (remove-text-properties start (1+ start) '(dbx-item-start nil))
-                        (insert " ")))
+                        (insert (dbx-job--cell-end c))))
              (insert "\n"))
-    (insert "  " (make-string (- dbx--gutter 4) ?\s) " └" (make-string (* 2 n) ?─) "\n")
+    (insert "  " (make-string (- dbx--gutter 5) ?\s) " └" (make-string (1+ (* 2 n)) ?─) "\n")
     ;; date labels where the day changes
     (let ((line (make-string (* 2 n) ?\s)) (prev nil))
       (cl-loop for r in runs for c from 0 do
@@ -501,26 +511,27 @@ in that workspace's context."
 (defun dbx-job--insert-matrix (runs keys)
   (let ((jid dbx-job--id))
     (dolist (key keys)
-      (insert "  " (dbx-pad key (- dbx--gutter 2)))
-      (dolist (r runs)
-        (let* ((st (dbx-run-task-status r key))
-               (attempts (dbx-run-task-attempts r key))
-               (rid (alist-get 'run_id r))
-               (start (point)))
-          (insert (dbx-status-glyph st))
-          (dbx-page-item start (point)
-                         'dbx-open (lambda () (dbx-run-page rid))
-                         'dbx-id rid 'dbx-run-id rid
-                         'dbx-url (dbx-url (format "/jobs/%s/runs/%s" jid rid))
-                         'help-echo (concat key " · " (dbx-format-time (alist-get 'start_time r))
-                                            (mapconcat (lambda (a)
-                                                         (format "\n  %s %s %s"
-                                                                 (dbx-glyph (dbx-run-status a))
-                                                                 (dbx-run-status-label a)
-                                                                 (or (dbx-get a 'status 'termination_details 'message) "")))
-                                                       attempts "")))
-          (remove-text-properties start (1+ start) '(dbx-item-start nil))
-          (insert " ")))
+      ;; one blank column at least between the label and the first cell
+      (insert "  " (dbx-pad key (- dbx--gutter 3)) (dbx-align-to dbx--gutter))
+      (cl-loop for r in runs for i from 0 do
+               (let* ((st (dbx-run-task-status r key))
+                      (attempts (dbx-run-task-attempts r key))
+                      (rid (alist-get 'run_id r))
+                      (start (point)))
+                 (insert (dbx-status-glyph st))
+                 (dbx-page-item start (point)
+                                'dbx-open (lambda () (dbx-run-page rid))
+                                'dbx-id rid 'dbx-run-id rid
+                                'dbx-url (dbx-url (format "/jobs/%s/runs/%s" jid rid))
+                                'help-echo (concat key " · " (dbx-format-time (alist-get 'start_time r))
+                                                   (mapconcat (lambda (a)
+                                                                (format "\n  %s %s %s"
+                                                                        (dbx-glyph (dbx-run-status a))
+                                                                        (dbx-run-status-label a)
+                                                                        (or (dbx-get a 'status 'termination_details 'message) "")))
+                                                              attempts "")))
+                 (remove-text-properties start (1+ start) '(dbx-item-start nil))
+                 (insert (dbx-job--cell-end i))))
       (insert "\n"))))
 
 (defun dbx-job-browse ()
@@ -633,7 +644,8 @@ pages and in the runs list.  Never prompts."
   (let* ((job dbx-job--job)
          (latest (car dbx-job--runs)))
     (dbx-graph-show (dbx-job--task-graph (dbx-job-name job)
-                                         (dbx-get job 'settings 'tasks) latest))))
+                                         (dbx-get job 'settings 'tasks) latest)
+                    "job-graph" dbx-job--id)))
 
 (defun dbx-job--task-graph (title tasks run)
   "Graph of TASKS (with depends_on), statuses from RUN if given."
@@ -762,7 +774,7 @@ read a run ID or a run URL."
                (st (dbx-run-task-status run key))
                (line-start (point))
                (bar (make-string width ?\s)))
-          (insert "  " (dbx-status-glyph st) " " (dbx-pad key 30) " ")
+          (insert "  " (dbx-status-glyph st) (dbx-align-to 4) (dbx-pad key 30) " ")
           (if (memq (dbx-run-status last) '(skipped))
               (insert (propertize (or (dbx-get last 'state 'state_message) "skipped") 'face 'dbx-dim))
             (let ((bar-start (point)))
@@ -829,7 +841,8 @@ read a run ID or a run URL."
                                          (cl-remove-duplicates (alist-get 'tasks run)
                                                                :key (lambda (x) (alist-get 'task_key x))
                                                                :test #'equal :from-end t)
-                                         run))))
+                                         run)
+                    "run-graph" (alist-get 'run_id run))))
 
 (defun dbx-run-cancel ()
   "Cancel this run."
@@ -918,7 +931,7 @@ read a run ID or a run URL."
 
 (define-derived-mode dbx-runs-list-mode dbx-list-mode "DBX-Runs"
   "List of job runs."
-  (setq tabulated-list-format [("" 1 nil) ("Job" 34 t) ("Run ID" 18 t) ("Trigger" 10 t)
+  (setq tabulated-list-format [("" 2 nil) ("Job" 34 t) ("Run ID" 18 t) ("Trigger" 10 t)
                                ("Start" 14 t) ("Duration" 11 nil :right-align t) ("Status" 12 t)])
   (setq-local dbx-list-open-function #'dbx-run-page)
   (setq-local dbx-page-refresh-function #'dbx-runs--refresh)
@@ -985,7 +998,7 @@ CONTEXT (a name or plist) defaults to the active context."
 
 (define-derived-mode dbx-jobs-list-mode dbx-list-mode "DBX-Jobs"
   "List of jobs."
-  (setq tabulated-list-format [("Last runs" 10 nil) ("Name" 36 t) ("Bundle" 16 t)
+  (setq tabulated-list-format [("Last runs" 11 nil) ("Name" 36 t) ("Bundle" 16 t)
                                ("Schedule" 10 t) ("Creator" 26 t) ("Last run" 10 nil)])
   (setq tabulated-list-sort-key '("Name"))
   (setq-local dbx-list-open-function #'dbx-job-page)

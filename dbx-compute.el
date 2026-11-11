@@ -212,7 +212,7 @@ NO-SELECT, prepare the page without displaying it."
 
 (define-derived-mode dbx-clusters-list-mode dbx-list-mode "DBX-Clusters"
   "List of clusters."
-  (setq tabulated-list-format [("State" 12 t) ("Name" 32 t) ("DBR" 6 t) ("Workers" 14 nil)
+  (setq tabulated-list-format [("State" 14 t) ("Name" 32 t) ("DBR" 6 t) ("Workers" 14 nil)
                                ("Access" 14 t) ("Owner" 26 t)])
   (setq tabulated-list-sort-key '("Name"))
   (setq-local dbx-list-open-function #'dbx-cluster-page)
@@ -380,7 +380,7 @@ NO-SELECT, prepare the page without displaying it."
           (dbx-page-heading "Recent queries" (format "%d" (length queries)))
           (dolist (q queries)
             (let ((s (point)) (d (alist-get 'duration q)))
-              (insert "  " (dbx-status-glyph (dbx--query-status (alist-get 'status q))) " "
+              (insert "  " (dbx-status-glyph (dbx--query-status (alist-get 'status q))) (dbx-align-to 4)
                       (dbx-pad (replace-regexp-in-string "[ \t\n]+" " " (or (alist-get 'query_text q) ""))
                                48)
                       " " (dbx-pad (dbx-format-time (alist-get 'query_start_time_ms q) "%H:%M") 6)

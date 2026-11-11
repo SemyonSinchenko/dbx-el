@@ -12,7 +12,7 @@
 
 (files "dbx*.el" "python")
 
-(script "test" "rm -f *.elc && eask compile && eask test ert test/dbx-test.el")
+(script "test" "rm -f *.elc && eask compile && eask load test/compile.el && eask test ert test/dbx-test.el")
 
 (source 'gnu)
 

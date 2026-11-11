@@ -204,7 +204,7 @@ Keys: :flows (FLOW -> (:output :inputs :explain)), :datasets
 
 (define-derived-mode dbx-pipelines-list-mode dbx-list-mode "DBX-Pipelines"
   "List of pipelines."
-  (setq tabulated-list-format [("Last" 12 t) ("Name" 40 t) ("State" 10 t) ("Creator" 30 t)])
+  (setq tabulated-list-format [("Last" 16 t) ("Name" 40 t) ("State" 10 t) ("Creator" 30 t)])
   (setq tabulated-list-sort-key '("Name"))
   (setq-local dbx-list-open-function #'dbx-pipeline-page)
   (setq-local dbx-list-url-function (lambda (id) (dbx-url (format "/pipelines/%s" id))))
@@ -336,7 +336,7 @@ read a pipeline ID or URL."
             (insert "  " (dbx-status-glyph (if (plist-get d :status)
                                                 (dbx-pipeline-status (plist-get d :status))
                                               'absent))
-                    " " (dbx-pad (dbx--short-dataset name) 32) " "
+                    (dbx-align-to 4) (dbx-pad (dbx--short-dataset name) 32) " "
                     (dbx-pad (dbx--dataset-type-short (plist-get d :type)) 5) " "
                     (dbx-pad (dbx--format-count (plist-get d :rows)) 8 t) " "
                     (dbx-pad (dbx-hbar (plist-get d :rows) mx 10) 10) " "
@@ -395,7 +395,8 @@ read a pipeline ID or URL."
         (message "dbx: no flow definitions in the latest update; run `v' (validate) to produce them")
       (dbx-graph-show (dbx-pipeline-graph-from-events
                        (format "Pipeline %s" name) events
-                       (lambda (n) (dbx-pipeline--show-dataset n a)))))))
+                       (lambda (n) (dbx-pipeline--show-dataset n a)))
+                      "pipeline-graph" dbx-pipeline--id))))
 
 ;;;; Actions
 
@@ -449,7 +450,7 @@ read a pipeline ID or URL."
                    (erase-buffer)
                    (insert (propertize "Updates\n\n" 'face 'dbx-title))
                    (dolist (u (alist-get 'updates r))
-                     (insert "  " (dbx-status-glyph (dbx-pipeline-status (alist-get 'state u))) " "
+                     (insert "  " (dbx-status-glyph (dbx-pipeline-status (alist-get 'state u))) (dbx-align-to 4)
                              (dbx-pad (alist-get 'state u) 12) " "
                              (dbx-pad (dbx-format-time (alist-get 'creation_time u)) 14) " "
                              (dbx-pad (or (alist-get 'cause u) "") 16) " "

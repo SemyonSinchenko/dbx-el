@@ -340,16 +340,22 @@ Nodes reached a second time are shown with a back reference."
                            (make-composed-keymap map-keys dbx-graph-mode-map)))
       (insert "\n"))))
 
-(defun dbx-graph-show (graph &optional buffer-name)
-  "Display GRAPH in BUFFER-NAME (default from its title)."
-  (let ((buf (dbx-page-buffer (or buffer-name (format "*dbx-graph: %s*" (plist-get graph :title)))
-                              #'dbx-graph-mode)))
+(defun dbx-graph-show (graph &optional kind id context no-select)
+  "Display GRAPH and return its buffer.
+The buffer is the page of KIND (default \"graph\") and ID (default
+the graph's title) in CONTEXT (default: the caller's context), so
+node actions open pages in the same workspace.  Callers should pass
+a real identity, e.g. \"job-graph\" and a job ID, so two jobs with
+the same name don't share a buffer.  With NO-SELECT, don't display
+the buffer."
+  (let* ((title (or (plist-get graph :title) "Graph"))
+         (buf (dbx-page-buffer (or kind "graph") (or id title) #'dbx-graph-mode context)))
     (with-current-buffer buf
+      (dbx-page-rename title)
       (setq dbx-graph--graph graph)
       (setq-local dbx-page-refresh-function #'dbx-graph--render)
       (dbx-graph--render))
-    (pop-to-buffer buf)
-    buf))
+    (dbx-page-display buf no-select)))
 
 (provide 'dbx-graph)
 ;;; dbx-graph.el ends here
